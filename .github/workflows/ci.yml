@@ -97,12 +97,42 @@ jobs:
       - name: Run host native tests
         run: ./scripts/test-native.sh
 
-      - name: Test, lint published variant, build JNI for all ABIs, and assemble dev OTA
+      - name: Test API-23 model, unit tests, lint, build JNI for all ABIs, and assemble dev OTA
         run: |
           ./gradlew --no-daemon --stacktrace \
-            testDebugUnitTest lintDevOta :app:assembleDevOta \
+            :app:verifyApi23Baseline :app:testDebugUnitTest :app:lintDevOta :app:assembleDevOta \
             -PdevOtaVersionCode="$DEV_OTA_VERSION_CODE" \
             -PdevOtaVersionName="$DEV_OTA_VERSION_NAME"
+
+      - name: Report exact unit-test count
+        run: |
+          python3 - <<'PY'
+          import glob
+          import sys
+          import xml.etree.ElementTree as ET
+
+          files = sorted(glob.glob("app/build/test-results/testDebugUnitTest/TEST-*.xml"))
+          if not files:
+              raise SystemExit("No testDebugUnitTest JUnit XML reports were produced")
+          totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+          for path in files:
+              root = ET.parse(path).getroot()
+              for key in totals:
+                  totals[key] += int(root.attrib.get(key, "0"))
+          print(
+              "CamX unit tests: "
+              f"tests={totals['tests']} failures={totals['failures']} "
+              f"errors={totals['errors']} skipped={totals['skipped']}"
+          )
+          if totals["failures"] or totals["errors"]:
+              sys.exit(1)
+          PY
+
+      - name: Verify packaged native API-23 load boundary
+        run: |
+          apk="$(find app/build/outputs/apk/devOta -type f -name '*.apk' | head -n 1)"
+          test -f "$apk"
+          ./scripts/verify-native-api23.sh "$apk"
 
       - name: Package and verify signed development OTA
         run: |

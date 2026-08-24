@@ -5,6 +5,7 @@ import com.sahidcode404.camx.core.camera.model.CaptureToken
 import com.sahidcode404.camx.core.camera.model.PreviewConfigurationAttemptKind
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
 import java.util.EnumMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 internal enum class PendingCameraStage {
@@ -37,10 +38,57 @@ internal enum class CameraCallbackDecision {
 internal sealed interface ResourceAdoption<out T> {
     data class Adopted<T>(val resource: T) : ResourceAdoption<T>
 
-    data object StaleClosed : ResourceAdoption<Nothing>
+    /**
+     * Stale callback admission never closes while authoritative mutation is running. The first stale
+     * resolution carries a one-shot cleanup to execute only after the mutation gate is released;
+     * duplicate or already-adopted delivery has no cleanup authority.
+     */
+    data class Stale(val cleanup: CameraResourceCleanup?) : ResourceAdoption<Nothing>
 }
 
-/** A callback-delivered resource can be adopted once or stale-closed once, never both. */
+/** One cleanup action, callable repeatedly but physically attempted at most once. */
+internal class CameraResourceCleanup internal constructor(
+    private val close: () -> Unit,
+) {
+    private val attempted = AtomicBoolean(false)
+
+    fun closeOnce(): Boolean {
+        if (!attempted.compareAndSet(false, true)) return false
+        close()
+        return true
+    }
+}
+
+/**
+ * Executes a detached cleanup set once, attempts every close even after failure, and preserves later
+ * failures as suppressed detail on the first failure. Call only after leaving CameraStateMutationGate.
+ */
+internal class CameraCleanupPlan(
+    private val cleanups: List<CameraResourceCleanup>,
+) {
+    private val consumed = AtomicBoolean(false)
+
+    fun closeAllOnce(): Boolean {
+        if (!consumed.compareAndSet(false, true)) return false
+        var primaryFailure: Throwable? = null
+        cleanups.forEach { cleanup ->
+            try {
+                cleanup.closeOnce()
+            } catch (error: Throwable) {
+                val primary = primaryFailure
+                if (primary == null) {
+                    primaryFailure = error
+                } else if (primary !== error) {
+                    primary.addSuppressed(error)
+                }
+            }
+        }
+        primaryFailure?.let { throw it }
+        return true
+    }
+}
+
+/** A callback-delivered resource can be adopted once or detached for stale cleanup once, never both. */
 internal class CloseOnceCameraResource<T>(
     private val resource: T,
     private val close: (T) -> Unit,
@@ -54,10 +102,25 @@ internal class CloseOnceCameraResource<T>(
         return resource
     }
 
-    fun closeIfUnadopted(): Boolean {
-        if (!disposition.compareAndSet(Disposition.PENDING, Disposition.STALE_CLOSED)) return false
-        close(resource)
-        return true
+    fun detachForStaleCleanup(): CameraResourceCleanup? {
+        if (!disposition.compareAndSet(Disposition.PENDING, Disposition.STALE_DETACHED)) return null
+        return CameraResourceCleanup {
+            try {
+                close(resource)
+                check(
+                    disposition.compareAndSet(
+                        Disposition.STALE_DETACHED,
+                        Disposition.STALE_CLOSED,
+                    ),
+                ) { "Detached camera callback resource changed disposition during cleanup" }
+            } catch (error: Throwable) {
+                disposition.compareAndSet(
+                    Disposition.STALE_DETACHED,
+                    Disposition.STALE_CLOSE_FAILED,
+                )
+                throw error
+            }
+        }
     }
 
     internal fun disposition(): Disposition = disposition.get()
@@ -65,14 +128,17 @@ internal class CloseOnceCameraResource<T>(
     internal enum class Disposition {
         PENDING,
         ADOPTED,
+        STALE_DETACHED,
         STALE_CLOSED,
+        STALE_CLOSE_FAILED,
     }
 }
 
 /**
  * Synchronous state used only from [CameraStateMutationGate]. It publishes current intent before a
  * future Camera2 command is issued; asynchronous callbacks must re-enter the mutation gate and
- * consume the exact permit before they can publish state or adopt a delivered resource.
+ * consume the exact permit before they can publish state or adopt a delivered resource. Resource
+ * rejection only detaches cleanup authority here; actual close calls happen after the gate unlocks.
  */
 internal class CameraAsyncOwnership {
     private val ownerIdentity = Any()
@@ -119,14 +185,13 @@ internal class CameraAsyncOwnership {
 
     fun completeSignal(permit: PendingCameraOperationPermit): CameraCallbackDecision = consume(permit)
 
-    fun <T> adoptOrClose(
+    fun <T> resolveResource(
         permit: PendingCameraOperationPermit,
         delivered: CloseOnceCameraResource<T>,
     ): ResourceAdoption<T> = if (consume(permit) == CameraCallbackDecision.ACCEPTED) {
         ResourceAdoption.Adopted(delivered.adopt())
     } else {
-        delivered.closeIfUnadopted()
-        ResourceAdoption.StaleClosed
+        ResourceAdoption.Stale(delivered.detachForStaleCleanup())
     }
 
     internal fun authoritativeIntent(): CameraOperationIdentity? = currentIntent

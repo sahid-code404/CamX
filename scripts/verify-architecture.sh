@@ -37,10 +37,20 @@ for type in CameraRoute CameraRouteId CameraCapabilities CameraStreamCapability 
   CameraMetadataEvidence CameraEnvironmentFingerprint CanonicalLens CanonicalLensFingerprint \
   CameraProfile CameraProfileFingerprint CameraTrust PreviewTrust RawTrust ActiveCameraSelection \
   SelectionGeneration SessionGeneration CaptureToken PreviewConfiguration PreviewStreamType \
-  PreviewFpsRequest PreviewFpsResolution HotStartSnapshot CameraTopologySnapshot RawCaptureContext \
-  RawPair CameraFailure CameraStartupTrace CameraResourceSnapshot CameraUiSnapshot; do
+  PreviewConfigurationAttemptKind PreviewFpsRequest PreviewFpsResolution HotStartSnapshot \
+  CameraTopologySnapshot RawCaptureContext RawPair CameraFailure RequestedConfigurationKind \
+  CameraStartupTrace CameraResourceSnapshot CameraUiSnapshot CameraStateMutationGate \
+  CameraAsyncOwnership PendingCameraOperationPermit CameraResourceCleanup CameraCleanupPlan; do
   rg --quiet "(?:class|interface|enum) ${type}\b" app/src/main/java || {
     echo "Core architecture type missing: $type" >&2
+    exit 1
+  }
+done
+
+readonly ci_workflow=".github/workflows/ci.yml"
+for requirement in ':app:verifyApi23Baseline' './scripts/verify-native-api23.sh'; do
+  rg --fixed-strings --quiet "$requirement" "$ci_workflow" || {
+    echo "CAMX-100A CI requirement missing: $requirement" >&2
     exit 1
   }
 done

@@ -4,9 +4,13 @@ set -euo pipefail
 readonly root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 readonly owner="app/src/main/java/com/sahidcode404/camx/core/camera/session/CameraSessionController.kt"
+readonly mutation_gate="app/src/main/java/com/sahidcode404/camx/core/camera/session/CameraStateMutationGate.kt"
+readonly async_owner="app/src/main/java/com/sahidcode404/camx/core/camera/session/CameraAsyncOwnership.kt"
 failures=0
 
-test -f "$owner" || { echo "Missing sole camera owner: $owner" >&2; exit 1; }
+for required_file in "$owner" "$mutation_gate" "$async_owner"; do
+  test -f "$required_file" || { echo "Missing camera ownership file: $required_file" >&2; exit 1; }
+done
 
 open_calls="$(rg --line-number '\bopenCamera\s*\(' app/src/main native/core 2>/dev/null || true)"
 if [[ -n "$open_calls" ]] && printf '%s\n' "$open_calls" | rg --quiet -v "^${owner}:"; then
@@ -49,7 +53,8 @@ fi
 
 for requirement in \
   'class CameraSessionController' \
-  'operationMutex = Mutex' \
+  'private val mutationGate = CameraStateMutationGate(callbackDispatcher)' \
+  'private val asyncOwnership = CameraAsyncOwnership()' \
   'CameraGenerationGate' \
   'HandlerThread("camx-camera-control")'; do
   if ! rg --fixed-strings --quiet "$requirement" "$owner"; then
@@ -57,6 +62,44 @@ for requirement in \
     failures=$((failures + 1))
   fi
 done
+
+if rg --line-number '\boperationMutex\b|\bMutex\s*\(' "$owner"; then
+  echo 'Camera ownership violation: CameraSessionController must use the non-suspending mutation gate, not an owner-level coroutine mutex.' >&2
+  failures=$((failures + 1))
+fi
+
+for requirement in \
+  'class CameraStateMutationGate' \
+  'suspend fun <T> mutate(block: () -> T): T' \
+  'mutex.withLock { block() }'; do
+  if ! rg --fixed-strings --quiet "$requirement" "$mutation_gate"; then
+    echo "Camera mutation-gate requirement missing: $requirement" >&2
+    failures=$((failures + 1))
+  fi
+done
+if rg --line-number 'mutate\s*\(\s*block\s*:\s*suspend|block\s*:\s*suspend\s*\(' "$mutation_gate"; then
+  echo 'Camera ownership violation: authoritative mutation block must remain non-suspending.' >&2
+  failures=$((failures + 1))
+fi
+
+for requirement in \
+  'class PendingCameraOperationPermit' \
+  'permit.ownerIdentity === ownerIdentity' \
+  'permit.intent == currentIntent' \
+  'pending[permit.stage] === permit' \
+  'fun <T> resolveResource(' \
+  'ResourceAdoption.Stale(delivered.detachForStaleCleanup())' \
+  'class CameraResourceCleanup' \
+  'class CameraCleanupPlan'; do
+  if ! rg --fixed-strings --quiet "$requirement" "$async_owner"; then
+    echo "Async camera ownership requirement missing: $requirement" >&2
+    failures=$((failures + 1))
+  fi
+done
+if rg --line-number '\badoptOrClose\b|\bcloseIfUnadopted\b' "$async_owner"; then
+  echo 'Camera ownership violation: stale resource cleanup must be detached under the gate and executed after unlock.' >&2
+  failures=$((failures + 1))
+fi
 
 readonly state_file="app/src/main/java/com/sahidcode404/camx/core/camera/session/CameraEngineState.kt"
 for state in Closed WaitingForSurface Opening ConfiguringPreview Previewing Switching \

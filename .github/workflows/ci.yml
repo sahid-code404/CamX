@@ -61,10 +61,32 @@ jobs:
           echo "CAMX_BUILD_TIMESTAMP_UTC=$commit_timestamp" >> "$GITHUB_ENV"
           echo "CAMX_CHANGELOG=$changelog" >> "$GITHUB_ENV"
 
-      - name: Verify architecture and whitespace
-        run: |
-          ./scripts/verify-whitespace.sh
-          ./scripts/verify-architecture.sh
+      - name: Verify whitespace
+        run: ./scripts/verify-whitespace.sh
+
+      - name: Verify universality
+        run: ./scripts/verify-universality.sh
+
+      - name: Verify sole camera owner
+        run: ./scripts/verify-camera-owner.sh
+
+      - name: Verify no background components
+        run: ./scripts/verify-no-services.sh
+
+      - name: Verify camera hot paths
+        run: ./scripts/verify-hot-paths.sh
+
+      - name: Verify native boundaries
+        run: ./scripts/verify-native-boundaries.sh
+
+      - name: Verify resource ownership
+        run: ./scripts/verify-resource-ownership.sh
+
+      - name: Verify development OTA contract
+        run: ./scripts/verify-development-ota.sh
+
+      - name: Verify architecture document and type inventory
+        run: ./scripts/verify-architecture.sh
 
       - name: Run host native tests
         run: ./scripts/test-native.sh

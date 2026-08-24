@@ -37,11 +37,16 @@ fun calculateStableSurfaceTransform(
     // bounding box so its top-left is exactly CAMX-104's center-crop translation.
     val translationX = geometry.translatedX + (renderedWidth - streamSize.width.toFloat()) / 2f
     val translationY = geometry.translatedY + (renderedHeight - streamSize.height.toFloat()) / 2f
+
+    // CAMX-104's mirror flag is horizontal in the final displayed coordinate system. Conjugating
+    // that reflection through a quarter-turn rotation swaps the local reflection axis.
+    val mirrorLocalX = geometry.mirrorHorizontally && !swapAxes
+    val mirrorLocalY = geometry.mirrorHorizontally && swapAxes
     return StableSurfaceTransform(
         layoutSize = streamSize,
         clockwiseRotationDegrees = geometry.clockwiseRotationDegrees,
-        scaleX = if (geometry.mirrorHorizontally) -geometry.scale else geometry.scale,
-        scaleY = geometry.scale,
+        scaleX = if (mirrorLocalX) -geometry.scale else geometry.scale,
+        scaleY = if (mirrorLocalY) -geometry.scale else geometry.scale,
         translationX = translationX,
         translationY = translationY,
     )

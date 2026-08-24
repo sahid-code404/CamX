@@ -429,7 +429,7 @@ object CameraTopologyResolver {
     /** Exact IEEE-754 representation; deliberately no decimal rounding or locale-sensitive formatting. */
     private fun floatKey(value: Float): String = value.toRawBits().toUInt().toString(16).padStart(8, '0')
 
-    private fun opaqueKey(value: String): String = "opaque:${stableHash("opaque-order|$value")}" 
+    private fun opaqueKey(value: String): String = "opaque:${stableHash("opaque-order|$value")}"
 
     private fun stableHash(value: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))

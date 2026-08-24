@@ -15,13 +15,20 @@ sealed interface CacheRead<out T> {
     data object Miss : CacheRead<Nothing>
     data object Stale : CacheRead<Nothing>
     data class Corrupt(val reason: String) : CacheRead<Nothing>
+    data class IoFailure(val reason: String) : CacheRead<Nothing>
+}
+
+sealed interface CacheWrite {
+    data object Success : CacheWrite
+    data class Rejected(val reason: String) : CacheWrite
+    data class IoFailure(val reason: String) : CacheWrite
 }
 
 interface CameraCachePersistence {
     suspend fun readHot(environment: CameraEnvironmentFingerprint): CacheRead<HotStartSnapshot>
     suspend fun readTopology(environment: CameraEnvironmentFingerprint): CacheRead<CameraTopologySnapshot>
-    suspend fun writeHot(snapshot: HotStartSnapshot)
-    suspend fun writeTopology(snapshot: CameraTopologySnapshot)
+    suspend fun writeHot(snapshot: HotStartSnapshot): CacheWrite
+    suspend fun writeTopology(snapshot: CameraTopologySnapshot): CacheWrite
 }
 
 /** Persistence and immutable memory publication are ordered outside every camera hot path. */
@@ -43,24 +50,29 @@ class CameraCacheRepository(private val persistence: CameraCachePersistence) {
         }
         return hotMutationMutex.withLock {
             if (!isCurrent(hotRequestSequence, request)) return@withLock CacheRead.Stale
-            val result = persistence.readHot(environment)
+            val result = try {
+                persistence.readHot(environment)
+            } catch (error: Exception) {
+                CacheRead.IoFailure(error.message ?: error.javaClass.simpleName)
+            }
             synchronized(hotRequestSequence) {
                 if (request != hotRequestSequence.get()) {
                     CacheRead.Stale
                 } else {
                     when (result) {
-                        is CacheRead.Hit -> if (result.value.environment == environment &&
+                        is CacheRead.Hit -> if (
+                            result.value.environment == environment &&
                             result.value.schema == CameraSchemaVersions.HOT_START
                         ) {
                             hotMemory.set(result.value)
                             result
                         } else {
-                            hotMemory.set(null)
                             CacheRead.Corrupt("Hot cache schema or environment mismatch")
                         }
-                        CacheRead.Miss -> CacheRead.Miss.also { hotMemory.set(null) }
-                        CacheRead.Stale -> CacheRead.Stale.also { hotMemory.set(null) }
-                        is CacheRead.Corrupt -> result.also { hotMemory.set(null) }
+                        CacheRead.Miss -> CacheRead.Miss
+                        CacheRead.Stale -> CacheRead.Stale
+                        is CacheRead.Corrupt -> result
+                        is CacheRead.IoFailure -> result
                     }
                 }
             }
@@ -71,31 +83,34 @@ class CameraCacheRepository(private val persistence: CameraCachePersistence) {
         environment: CameraEnvironmentFingerprint,
     ): CacheRead<CameraTopologySnapshot> {
         val request = beginRequest(topologyRequestSequence) {
-            topologyMemory.updateAndGetApi23 { current ->
-                current?.takeIf { it.environment == environment }
-            }
+            topologyMemory.updateAndGetApi23 { current -> current?.takeIf { it.environment == environment } }
         }
         return topologyMutationMutex.withLock {
             if (!isCurrent(topologyRequestSequence, request)) return@withLock CacheRead.Stale
-            val result = persistence.readTopology(environment)
+            val result = try {
+                persistence.readTopology(environment)
+            } catch (error: Exception) {
+                CacheRead.IoFailure(error.message ?: error.javaClass.simpleName)
+            }
             synchronized(topologyRequestSequence) {
                 if (request != topologyRequestSequence.get()) {
                     CacheRead.Stale
                 } else {
                     when (result) {
-                        is CacheRead.Hit -> if (result.value.environment == environment &&
+                        is CacheRead.Hit -> if (
+                            result.value.environment == environment &&
                             result.value.schema == CameraSchemaVersions.TOPOLOGY
                         ) {
                             val frozen = result.value.frozenCopy()
                             topologyMemory.set(frozen)
                             CacheRead.Hit(frozen)
                         } else {
-                            topologyMemory.set(null)
                             CacheRead.Corrupt("Topology cache schema or environment mismatch")
                         }
-                        CacheRead.Miss -> CacheRead.Miss.also { topologyMemory.set(null) }
-                        CacheRead.Stale -> CacheRead.Stale.also { topologyMemory.set(null) }
-                        is CacheRead.Corrupt -> result.also { topologyMemory.set(null) }
+                        CacheRead.Miss -> CacheRead.Miss
+                        CacheRead.Stale -> CacheRead.Stale
+                        is CacheRead.Corrupt -> result
+                        is CacheRead.IoFailure -> result
                     }
                 }
             }
@@ -109,8 +124,12 @@ class CameraCacheRepository(private val persistence: CameraCachePersistence) {
         val request = beginRequest(hotRequestSequence) { hotMemory.set(snapshot) }
         return hotMutationMutex.withLock {
             if (!isCurrent(hotRequestSequence, request)) return@withLock false
-            persistence.writeHot(snapshot)
-            isCurrent(hotRequestSequence, request)
+            val write = try {
+                persistence.writeHot(snapshot)
+            } catch (_: Exception) {
+                return@withLock false
+            }
+            write == CacheWrite.Success && isCurrent(hotRequestSequence, request)
         }
     }
 
@@ -118,19 +137,16 @@ class CameraCacheRepository(private val persistence: CameraCachePersistence) {
         require(snapshot.schema == CameraSchemaVersions.TOPOLOGY) {
             "Cannot persist an unsupported topology-cache schema"
         }
-        val request = beginRequest(topologyRequestSequence) {
-            topologyMemory.updateAndGetApi23 { current ->
-                current?.takeIf { it.environment == snapshot.environment }
-            }
-        }
         val frozen = snapshot.frozenCopy()
-        synchronized(topologyRequestSequence) {
-            if (request == topologyRequestSequence.get()) topologyMemory.set(frozen)
-        }
+        val request = beginRequest(topologyRequestSequence) { topologyMemory.set(frozen) }
         return topologyMutationMutex.withLock {
             if (!isCurrent(topologyRequestSequence, request)) return@withLock false
-            persistence.writeTopology(frozen)
-            isCurrent(topologyRequestSequence, request)
+            val write = try {
+                persistence.writeTopology(frozen)
+            } catch (_: Exception) {
+                return@withLock false
+            }
+            write == CacheWrite.Success && isCurrent(topologyRequestSequence, request)
         }
     }
 

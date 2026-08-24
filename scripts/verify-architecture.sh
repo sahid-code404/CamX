@@ -61,6 +61,7 @@ done
 ./scripts/verify-hot-paths.sh
 ./scripts/verify-native-boundaries.sh
 ./scripts/verify-resource-ownership.sh
+./scripts/verify-cache-boundaries.sh
 ./scripts/verify-development-ota.sh
 
 echo 'Architecture verification passed.'

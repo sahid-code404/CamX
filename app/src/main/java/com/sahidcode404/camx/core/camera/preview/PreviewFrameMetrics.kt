@@ -2,8 +2,11 @@ package com.sahidcode404.camx.core.camera.preview
 
 import com.sahidcode404.camx.core.camera.model.CameraFpsCapability
 import com.sahidcode404.camx.core.camera.model.PreviewFpsRequest
-import kotlin.math.ceil
 
+/**
+ * Low-frequency immutable projection. movingAverageFps is based only on the currently retained
+ * interval window; p50/p95 use integer nearest-rank semantics: ceil(sampleCount * percentile).
+ */
 data class PreviewFrameMetricsSnapshot(
     val requested: PreviewFpsRequest,
     val resolved: CameraFpsCapability?,
@@ -13,18 +16,21 @@ data class PreviewFrameMetricsSnapshot(
     val p95FrameIntervalNs: Long?,
 )
 
+/** Owns exactly one fixed LongArray ring. recordSensorTimestamp() performs only primitive O(1) work. */
 class PreviewFrameMetrics(
     private val requested: PreviewFpsRequest,
     private val resolved: CameraFpsCapability?,
-    capacity: Int = 120,
+    capacity: Int = DEFAULT_CAPACITY,
 ) {
     private val intervals: LongArray
     private var size = 0
     private var writeIndex = 0
-    private var previousTimestampNs: Long? = null
+    private var previousTimestampNs = 0L
 
     init {
-        require(capacity in 2..MAX_CAPACITY) { "Metrics capacity must be between 2 and $MAX_CAPACITY" }
+        require(capacity in MIN_CAPACITY..MAX_CAPACITY) {
+            "Metrics capacity must be between $MIN_CAPACITY and $MAX_CAPACITY"
+        }
         intervals = LongArray(capacity)
     }
 
@@ -32,40 +38,54 @@ class PreviewFrameMetrics(
     fun recordSensorTimestamp(timestampNs: Long) {
         if (timestampNs <= 0L) return
         val previous = previousTimestampNs
-        if (previous == null) {
+        if (previous == 0L) {
             previousTimestampNs = timestampNs
             return
         }
         if (timestampNs <= previous) return
+        val intervalNs = timestampNs - previous
         previousTimestampNs = timestampNs
-        intervals[writeIndex] = timestampNs - previous
-        writeIndex = (writeIndex + 1) % intervals.size
+        intervals[writeIndex] = intervalNs
+        writeIndex += 1
+        if (writeIndex == intervals.size) writeIndex = 0
         if (size < intervals.size) size += 1
     }
 
     @Synchronized
     fun snapshot(): PreviewFrameMetricsSnapshot {
-        if (size == 0) {
-            return PreviewFrameMetricsSnapshot(requested, resolved, 0, null, null, null)
+        if (size == 0) return PreviewFrameMetricsSnapshot(requested, resolved, 0, null, null, null)
+
+        val ordered = LongArray(size)
+        var sumIntervalsNs = 0.0
+        for (index in 0 until size) {
+            val intervalNs = intervals[index]
+            ordered[index] = intervalNs
+            sumIntervalsNs += intervalNs.toDouble()
         }
-        val ordered = LongArray(size) { index -> intervals[index] }.sortedArray()
-        val meanInterval = ordered.fold(0.0) { sum, value -> sum + value.toDouble() } / size
+        ordered.sort()
+        val meanIntervalNs = sumIntervalsNs / size.toDouble()
+        val averageFps = NANOSECONDS_PER_SECOND.toDouble() / meanIntervalNs
         return PreviewFrameMetricsSnapshot(
             requested = requested,
             resolved = resolved,
             sampleCount = size,
-            movingAverageFps = if (meanInterval > 0.0) 1_000_000_000.0 / meanInterval else null,
-            p50FrameIntervalNs = percentile(ordered, 0.50),
-            p95FrameIntervalNs = percentile(ordered, 0.95),
+            movingAverageFps = averageFps.takeIf { it.isFinite() && it > 0.0 },
+            p50FrameIntervalNs = nearestRank(ordered, 50),
+            p95FrameIntervalNs = nearestRank(ordered, 95),
         )
     }
 
-    private fun percentile(sorted: LongArray, percentile: Double): Long {
-        val index = (ceil(sorted.size * percentile).toInt() - 1).coerceIn(sorted.indices)
-        return sorted[index]
+    private fun nearestRank(sorted: LongArray, percentile: Int): Long {
+        val rank = ((sorted.size.toLong() * percentile.toLong() + 99L) / 100L)
+            .coerceIn(1L, sorted.size.toLong())
+            .toInt()
+        return sorted[rank - 1]
     }
 
     private companion object {
+        const val MIN_CAPACITY = 2
         const val MAX_CAPACITY = 4_096
+        const val DEFAULT_CAPACITY = 120
+        const val NANOSECONDS_PER_SECOND = 1_000_000_000L
     }
 }

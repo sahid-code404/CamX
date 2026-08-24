@@ -3,7 +3,10 @@ package com.sahidcode404.camx.core.camera.bootstrap
 import android.content.Context
 import android.hardware.camera2.CameraManager
 import android.os.Build
+import com.sahidcode404.camx.core.camera.discovery.AndroidAdvertisedCameraEvidenceBackend
 import com.sahidcode404.camx.core.camera.discovery.AndroidFirstInstallSeedDiscovery
+import com.sahidcode404.camx.core.camera.discovery.DiscoveryDepth
+import com.sahidcode404.camx.core.camera.discovery.NdkAdvertisedCameraEvidenceBackend
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraRoute
@@ -15,22 +18,53 @@ import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceLease
 import com.sahidcode404.camx.core.camera.session.CameraEngineState
 import com.sahidcode404.camx.core.camera.session.CameraSessionController
+import com.sahidcode404.camx.core.camera.topology.AdvertisedTopologyEvidenceProvider
+import com.sahidcode404.camx.core.camera.topology.CameraTopologyRepository
+import com.sahidcode404.camx.core.camera.topology.PostFirstFrameTopologyReconciler
 import com.sahidcode404.camx.core.settings.SettingsSnapshot
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /** Lifecycle-scoped production graph. CameraSessionController remains the sole Camera2 resource owner. */
 class VisiblePreviewGraph(context: Context) : AutoCloseable {
     private val appContext = context.applicationContext
     private val cameraManager = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    private val environment = runtimeEnvironmentFingerprint()
     private val controller = CameraSessionController(cameraManager)
     private val seedDiscovery = AndroidFirstInstallSeedDiscovery(
         cameraManager = cameraManager,
-        environment = runtimeEnvironmentFingerprint(),
+        environment = environment,
     )
+    private val javaAdvertisedDiscovery = AndroidAdvertisedCameraEvidenceBackend(
+        cameraManager = cameraManager,
+        environment = environment,
+    )
+    private val ndkAdvertisedDiscovery = NdkAdvertisedCameraEvidenceBackend(environment)
     private val surfaceBridge = AndroidVisiblePreviewSurfaceBridge()
+    private val topologySignalScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    val topologyRepository = CameraTopologyRepository()
+
+    private val topologyReconciler = PostFirstFrameTopologyReconciler(
+        environment = environment,
+        repository = topologyRepository,
+        providers = listOf(
+            AdvertisedTopologyEvidenceProvider {
+                javaAdvertisedDiscovery.discoverReport(DiscoveryDepth.ADVERTISED).snapshots
+            },
+            AdvertisedTopologyEvidenceProvider {
+                listOf(ndkAdvertisedDiscovery.discoverReport(DiscoveryDepth.ADVERTISED).snapshot)
+            },
+        ),
+    )
 
     val coordinator = VisiblePreviewCoordinator(
         seedSource = VisiblePreviewSeedSource { seedDiscovery.discover().route },
@@ -39,6 +73,18 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         session = AndroidVisiblePreviewSessionPort(controller),
         settings = { SettingsSnapshot() },
     )
+
+    init {
+        // Only the verified first-frame state arms CAMX-107. The heavy metadata work itself runs on
+        // the reconciler's Default dispatcher and publication never restarts the working preview.
+        topologySignalScope.launch {
+            coordinator.uiState.collect { state ->
+                if (state is VisiblePreviewUiState.Previewing && state.firstFrameVerified) {
+                    topologyReconciler.startAfterFirstFrame()
+                }
+            }
+        }
+    }
 
     fun publishSurface(binding: PreviewSurfaceBinding) {
         when (val change = surfaceBridge.publish(binding)) {
@@ -53,6 +99,8 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     }
 
     override fun close() {
+        topologySignalScope.cancel()
+        topologyReconciler.close()
         surfaceBridge.close()
         coordinator.requestShutdown()
     }

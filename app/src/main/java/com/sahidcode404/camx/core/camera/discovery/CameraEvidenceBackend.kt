@@ -26,7 +26,7 @@ data class CameraEvidenceSnapshot(
     }
 }
 
-/** Metadata evidence only. Implementations must never open CameraDevice. */
+/** Metadata evidence only. Implementations must never open a camera device. */
 fun interface CameraEvidenceBackend {
     suspend fun discover(depth: DiscoveryDepth): CameraEvidenceSnapshot
 }

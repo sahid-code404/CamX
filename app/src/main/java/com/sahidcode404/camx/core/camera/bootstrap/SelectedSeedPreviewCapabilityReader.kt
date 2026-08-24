@@ -42,7 +42,7 @@ fun interface SelectedSeedPreviewCapabilitySource {
 
 /**
  * Bounded public Camera2 metadata reader for one already-selected seed route. It never enumerates
- * cameras and never opens a CameraDevice. Full physical/AUX reconciliation remains CAMX-107.
+ * additional cameras and never acquires a camera resource. Full physical/AUX reconciliation remains CAMX-107.
  */
 class AndroidSelectedSeedPreviewCapabilityReader(
     private val cameraManager: CameraManager,
@@ -115,7 +115,7 @@ class AndroidSelectedSeedPreviewCapabilityReader(
         }
 
         val fpsRanges = reportedRanges.asSequence()
-            .filter { it.lower != null && it.upper != null && it.lower > 0 && it.upper >= it.lower }
+            .filter { it.lower > 0 && it.upper >= it.lower }
             .map { CameraFpsCapability(it.lower, it.upper) }
             .distinct()
             .sortedWith(compareBy(CameraFpsCapability::minimum, CameraFpsCapability::maximum))

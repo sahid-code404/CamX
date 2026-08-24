@@ -224,6 +224,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
             @Suppress("UNCHECKED_CAST")
             (report.failures as MutableList<JavaAdvertisedEvidenceFailure>).clear()
         }
+        Unit
     }
 
     private fun backend(source: JavaAdvertisedCameraMetadataSource) =

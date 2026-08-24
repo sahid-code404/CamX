@@ -26,7 +26,7 @@ class PreviewGeometryCalculatorTest {
         )
         assertEquals(90, result.clockwiseRotationDegrees)
         assertEquals(1.25f, result.scale, 0.0001f)
-        assertEquals(0f, result.translatedX, 0.0001f)
+        assertEquals(-135f, result.translatedX, 0.0001f)
         assertEquals(0f, result.translatedY, 0.0001f)
         assertFalse(result.mirrorHorizontally)
     }

@@ -44,6 +44,12 @@ jobs:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
           dependency-graph: disabled
 
+      - name: Install architecture guard tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ripgrep
+          rg --version
+
       - name: Install pinned Android SDK, NDK, and CMake
         run: ./scripts/install-android-sdk.sh
 

@@ -1,5 +1,6 @@
 package com.sahidcode404.camx.core.camera.session
 
+import android.annotation.SuppressLint
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
@@ -314,23 +315,29 @@ class CameraSessionController private constructor(
                 command.preview.route.openCameraId,
                 object : CameraOpenCallbacks {
                     override fun onOpened(delivery: CloseOnceCameraResource<CameraDeviceHandle>) {
-                        callbackScope.launch { handleOpened(command, delivery) }
+                        dispatchDelivered(delivery) { handleOpened(command, delivery) }
                     }
+
                     override fun onDisconnected(delivery: CloseOnceCameraResource<CameraDeviceHandle>) {
-                        callbackScope.launch { handleDeviceTerminal(command, delivery, CameraDisconnected) }
+                        dispatchDelivered(delivery) {
+                            handleDeviceTerminal(command, delivery, CameraDisconnected)
+                        }
                     }
+
                     override fun onError(
                         delivery: CloseOnceCameraResource<CameraDeviceHandle>,
                         platformCode: Int,
                     ) {
-                        callbackScope.launch {
+                        dispatchDelivered(delivery) {
                             handleDeviceTerminal(command, delivery, platformDeviceFailure(platformCode))
                         }
                     }
                 },
             )
         } catch (error: Throwable) {
-            callbackScope.launch { handleOpenInvocationFailure(command, mapOpenInvocationFailure(error)) }
+            if (!shutdownRequested.get()) {
+                callbackScope.launch { handleOpenInvocationFailure(command, mapOpenInvocationFailure(error)) }
+            }
         }
     }
 
@@ -383,17 +390,20 @@ class CameraSessionController private constructor(
                         delivery: CloseOnceCameraResource<CameraCaptureSessionHandle>,
                         request: PreparedPreviewRequest,
                     ) {
-                        callbackScope.launch { handleConfigured(command, delivery, request) }
+                        dispatchDelivered(delivery) { handleConfigured(command, delivery, request) }
                     }
+
                     override fun onConfigureFailed(
                         delivery: CloseOnceCameraResource<CameraCaptureSessionHandle>,
                     ) {
-                        callbackScope.launch { handleConfigureFailed(command, delivery) }
+                        dispatchDelivered(delivery) { handleConfigureFailed(command, delivery) }
                     }
                 },
             )
         } catch (_: Throwable) {
-            callbackScope.launch { handleConfigureInvocationFailure(command) }
+            if (!shutdownRequested.get()) {
+                callbackScope.launch { handleConfigureInvocationFailure(command) }
+            }
         }
     }
 
@@ -438,11 +448,17 @@ class CameraSessionController private constructor(
     private fun issueRepeating(command: RepeatingCommand) {
         try {
             runtime.platform.startRepeating(command.session, command.request) {
-                callbackScope.launch { handleFirstFrame(command.firstFramePermit) }
+                if (!shutdownRequested.get()) {
+                    callbackScope.launch { handleFirstFrame(command.firstFramePermit) }
+                }
             }
-            callbackScope.launch { handleRepeatingStarted(command) }
+            if (!shutdownRequested.get()) {
+                callbackScope.launch { handleRepeatingStarted(command) }
+            }
         } catch (_: Throwable) {
-            callbackScope.launch { handleRepeatingRejected(command) }
+            if (!shutdownRequested.get()) {
+                callbackScope.launch { handleRepeatingRejected(command) }
+            }
         }
     }
 
@@ -670,14 +686,33 @@ class CameraSessionController private constructor(
         mutableState.value = next
     }
 
+    private fun <T> dispatchDelivered(
+        delivery: CloseOnceCameraResource<T>,
+        block: suspend () -> Unit,
+    ) {
+        if (shutdownRequested.get()) {
+            closeCleanup(delivery.detachForStaleCleanup())
+        } else {
+            callbackScope.launch { block() }
+        }
+    }
+
     private fun closeCleanup(cleanup: CameraResourceCleanup?) {
         if (cleanup == null) return
-        try { cleanup.closeOnce() } catch (_: Throwable) { }
+        try {
+            cleanup.closeOnce()
+        } catch (_: Throwable) {
+            // Close has no authority to mutate current state; all detached cleanups are best effort.
+        }
     }
 
     private fun closePlan(plan: CameraCleanupPlan?) {
         if (plan == null) return
-        try { plan.closeAllOnce() } catch (_: Throwable) { }
+        try {
+            plan.closeAllOnce()
+        } catch (_: Throwable) {
+            // CameraCleanupPlan already attempts every detached cleanup and preserves close ordering.
+        }
     }
 
     private data class SurfaceInput(
@@ -768,6 +803,7 @@ class CameraSessionController private constructor(
         private val cameraManager: CameraManager,
         private val callbackHandler: Handler,
     ) : CameraOwnerPlatform {
+        @SuppressLint("MissingPermission")
         override fun open(cameraId: CameraTransportId, callbacks: CameraOpenCallbacks) {
             var delivered: CloseOnceCameraResource<CameraDeviceHandle>? = null
             fun deliveryFor(device: CameraDevice): CloseOnceCameraResource<CameraDeviceHandle> {
@@ -823,6 +859,7 @@ class CameraSessionController private constructor(
                     override fun onConfigured(session: CameraCaptureSession) {
                         callbacks.onConfigured(deliveryFor(session), request)
                     }
+
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         callbacks.onConfigureFailed(deliveryFor(session))
                     }

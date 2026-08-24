@@ -5,18 +5,29 @@ without routing pixels through Compose or an application ImageReader. The view i
 screen lifetime. Surface lifecycle produces explicit leases whose identities and session generations
 must match before attach/detach; an old callback cannot unbind a newer surface.
 
-Idle photo preview contains only the display surface. `AUTO` and `CAMERA2_PRIVATE` are initially
-implemented policy values. `CAMERA2_YUV_420_888` remains a reserved enum and must not be exposed until
-it renders or analyzes actual frames with a bounded owner; a drain-only ImageReader is not a feature.
+CAMX-104 keeps preview stream choice pure. `AUTO` prefers an advertised `CAMERA2_PRIVATE` candidate
+when cadence evidence is equivalent because it is the display-oriented path. Explicit PRIVATE or YUV
+requests filter strictly to that advertised stream type. Selecting a YUV capability here does not
+create a YUV owner, ImageReader, processing pipeline, or UI surface integration; those remain separate
+resource/integration concerns.
 
-`PreviewGeometryCalculator` recomputes rotation, center crop, translation, and explicit front-mirror
-policy from current view/stream/orientation/facing inputs. It stores no previous-lens transform.
+Responsive size selection is relative to the actual view and rotated stream geometry, never a fixed
+resolution or aspect ratio. Normal preview targets roughly one effective source pixel per view pixel
+after center crop. High-resolution preference targets two-times linear oversampling (four-times
+effective source pixels), then chooses the closest cadence-compatible advertised candidate instead of
+blindly selecting the largest stream. A bounded candidate limit fails closed before sorting.
 
-`PreviewFpsResolver` leaves the Camera2 key absent when override is off. When on, it chooses only an
-advertised active-profile range that the selected stream can sustain; the resolved value is present
-before repeating request 1. `PreviewFrameMetrics` consumes sensor timestamps into a fixed primitive
-ring and formats average/p50/p95 only on snapshot.
+`PreviewGeometryCalculator` derives normalized rotation from sensor orientation, display rotation, and
+facing, swaps stream axes at 90/270 degrees, then applies one uniform center-crop scale. Rendered width
+and height cover the view, translation centers the crop, and horizontal mirroring is enabled only for
+an explicitly mirrored FRONT preview. No previous-lens transform is retained.
 
-High-resolution viewfinder policy is capability- and cadence-based. “On” means the largest supported
-live stream that still satisfies requested cadence and current view geometry, not maximum sensor
-mode. It remains a Tier-B implementation/hardware-validation ticket.
+`PreviewFpsResolver` remains the sole FPS-resolution policy. CAMX-104 calls it once per bounded stream
+candidate so known minimum-frame-duration evidence can reject or demote cadence-incompatible streams;
+unknown duration remains unknown rather than being fabricated. `PreviewFrameMetrics` remains unchanged
+and outside this ticket.
+
+A resolved `PreviewConfiguration` uses only an advertised concrete stream type and size. Its `pv1`
+signature is deterministic and contains requested stream policy, resolved type/size, high-resolution
+state, FPS request, resolved FPS range, and FPS fallback reason. No timestamp, object identity, locale,
+camera-ID meaning, or random value participates.

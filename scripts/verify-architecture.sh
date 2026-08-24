@@ -63,6 +63,7 @@ done
 ./scripts/verify-resource-ownership.sh
 ./scripts/verify-cache-boundaries.sh
 ./scripts/verify-discovery-purity.sh
+./scripts/verify-preview-policy.sh
 ./scripts/verify-development-ota.sh
 
 echo 'Architecture verification passed.'

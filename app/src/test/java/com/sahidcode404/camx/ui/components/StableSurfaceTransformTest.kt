@@ -28,25 +28,39 @@ class StableSurfaceTransformTest {
         val transform = calculateStableSurfaceTransform(stream, geometry)
 
         assertEquals(90, transform.clockwiseRotationDegrees)
-        assertEquals(abs(transform.scaleX), transform.scaleY, 0f)
+        assertEquals(abs(transform.scaleX), abs(transform.scaleY), 0f)
         assertBoundingBoxStartsAt(stream, transform, -25f, -140f)
     }
 
     @Test
-    fun frontMirrorOnlyFlipsHorizontalScaleSign() {
-        val normal = calculateStableSurfaceTransform(
-            IntSize(800, 600),
-            geometry(rotation = 270, scale = 1.5f, x = 0f, y = -30f, mirror = false),
-        )
-        val mirrored = calculateStableSurfaceTransform(
-            IntSize(800, 600),
-            geometry(rotation = 270, scale = 1.5f, x = 0f, y = -30f, mirror = true),
-        )
+    fun frontMirrorUsesLocalXAxisAtZeroOrOneEightyDegrees() {
+        for (rotation in listOf(0, 180)) {
+            val mirrored = calculateStableSurfaceTransform(
+                IntSize(800, 600),
+                geometry(rotation = rotation, scale = 1.5f, x = 0f, y = -30f, mirror = true),
+            )
+            assertEquals(-1.5f, mirrored.scaleX, 0f)
+            assertEquals(1.5f, mirrored.scaleY, 0f)
+        }
+    }
 
-        assertEquals(normal.scaleY, mirrored.scaleY, 0f)
-        assertEquals(-normal.scaleX, mirrored.scaleX, 0f)
-        assertEquals(normal.translationX, mirrored.translationX, 0f)
-        assertEquals(normal.translationY, mirrored.translationY, 0f)
+    @Test
+    fun frontMirrorUsesLocalYAxisAfterQuarterTurnToRemainScreenHorizontal() {
+        for (rotation in listOf(90, 270)) {
+            val normal = calculateStableSurfaceTransform(
+                IntSize(800, 600),
+                geometry(rotation = rotation, scale = 1.5f, x = 0f, y = -30f, mirror = false),
+            )
+            val mirrored = calculateStableSurfaceTransform(
+                IntSize(800, 600),
+                geometry(rotation = rotation, scale = 1.5f, x = 0f, y = -30f, mirror = true),
+            )
+
+            assertEquals(normal.scaleX, mirrored.scaleX, 0f)
+            assertEquals(-normal.scaleY, mirrored.scaleY, 0f)
+            assertEquals(normal.translationX, mirrored.translationX, 0f)
+            assertEquals(normal.translationY, mirrored.translationY, 0f)
+        }
     }
 
     @Test
@@ -60,7 +74,7 @@ class StableSurfaceTransformTest {
             assertTrue(transform.scaleY.isFinite())
             assertTrue(transform.translationX.isFinite())
             assertTrue(transform.translationY.isFinite())
-            assertEquals(abs(transform.scaleX), transform.scaleY, 0f)
+            assertEquals(abs(transform.scaleX), abs(transform.scaleY), 0f)
             assertBoundingBoxStartsAt(stream, transform, geometry.translatedX, geometry.translatedY)
         }
     }
@@ -91,7 +105,7 @@ class StableSurfaceTransformTest {
         val rotatedWidth = if (swapped) stream.height.toFloat() else stream.width.toFloat()
         val rotatedHeight = if (swapped) stream.width.toFloat() else stream.height.toFloat()
         val renderedWidth = rotatedWidth * abs(transform.scaleX)
-        val renderedHeight = rotatedHeight * transform.scaleY
+        val renderedHeight = rotatedHeight * abs(transform.scaleY)
         val actualX = stream.width / 2f - renderedWidth / 2f + transform.translationX
         val actualY = stream.height / 2f - renderedHeight / 2f + transform.translationY
         assertEquals(expectedX, actualX, 0.001f)

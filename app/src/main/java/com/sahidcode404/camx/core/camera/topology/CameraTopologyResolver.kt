@@ -81,13 +81,10 @@ object CameraTopologyResolver {
                     { cluster -> clusterFingerprint(cluster) },
                 ))
             for ((clusterIndex, cluster) in clusters.withIndex()) {
-                val normalIdentity = buildString {
-                    append(transportKey.transportId)
-                    append('|')
-                    append(transportKey.physicalId.orEmpty())
-                }
+                val normalIdentity = routeIdentity(transportKey)
                 // A conflict on an otherwise identical transport must not silently inherit the old route
-                // identity/trust. The unambiguous path keeps the frozen CAMX-102 route-ID contract.
+                // identity/trust. The direct path keeps the frozen CAMX-102 route-ID contract while
+                // physical-member identity is length-encoded so opaque separators cannot collide.
                 val routeIdentity = if (clusters.size == 1) {
                     normalIdentity
                 } else {
@@ -107,13 +104,15 @@ object CameraTopologyResolver {
                     "Route provenance exceeds the CAMX-107 bound"
                 }
 
+                val previousEvidence = previousEvidenceByTransport[transportKey].orEmpty()
                 val previous = previousRoutesById[advertised.id]
                     ?.takeIf { old ->
                         old.openCameraId == advertised.openCameraId &&
                             old.physicalCameraId == advertised.physicalCameraId &&
-                            previousEvidenceByTransport[transportKey]
-                                .orEmpty()
-                                .all { oldEvidence -> cluster.all { current -> !metadataConflicts(current, oldEvidence) } }
+                            previousEvidence.isNotEmpty() &&
+                            previousEvidence.all { oldEvidence ->
+                                cluster.all { current -> !metadataConflicts(current, oldEvidence) }
+                            }
                     }
                 val route = if (previous == null) advertised else advertised.copy(
                     metadataTrust = previous.metadataTrust,
@@ -263,6 +262,13 @@ object CameraTopologyResolver {
         transportId = transportId.value,
         physicalId = physicalId?.value,
     )
+
+    private fun routeIdentity(key: TransportKey): String {
+        val physical = key.physicalId ?: return "${key.transportId}|"
+        val transportBytes = key.transportId.toByteArray(Charsets.UTF_8).size
+        val physicalBytes = physical.toByteArray(Charsets.UTF_8).size
+        return "physical:$transportBytes:${key.transportId}:$physicalBytes:$physical"
+    }
 
     private fun compatibilityClusters(
         values: List<CameraMetadataEvidence>,

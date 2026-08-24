@@ -1,0 +1,104 @@
+name: CamX CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "rewrite/**"
+      - "phase/**"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Architecture, tests, native, lint, and signed APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    concurrency:
+      group: camx-validation-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    env:
+      CAMX_GIT_SHA: ${{ github.sha }}
+      CI: "true"
+
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+          dependency-graph: disabled
+
+      - name: Install pinned Android SDK, NDK, and CMake
+        run: ./scripts/install-android-sdk.sh
+
+      - name: Resolve reproducible development identity
+        run: |
+          set -euo pipefail
+          version_code=$((1000000 + GITHUB_RUN_NUMBER))
+          test "$version_code" -le 2100000000
+          short_sha="${GITHUB_SHA:0:12}"
+          commit_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          commit_timestamp="$(date --utc --date="@$commit_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+          changelog="$(git log -1 --pretty=%s "$GITHUB_SHA")"
+          echo "DEV_OTA_VERSION_CODE=$version_code" >> "$GITHUB_ENV"
+          echo "DEV_OTA_VERSION_NAME=0.1.0-dev.${GITHUB_RUN_NUMBER}.${short_sha}" >> "$GITHUB_ENV"
+          echo "CAMX_BUILD_TIMESTAMP_UTC=$commit_timestamp" >> "$GITHUB_ENV"
+          echo "CAMX_CHANGELOG=$changelog" >> "$GITHUB_ENV"
+
+      - name: Verify architecture and whitespace
+        run: |
+          ./scripts/verify-whitespace.sh
+          ./scripts/verify-architecture.sh
+
+      - name: Run host native tests
+        run: ./scripts/test-native.sh
+
+      - name: Test, lint published variant, build JNI for all ABIs, and assemble dev OTA
+        run: |
+          ./gradlew --no-daemon --stacktrace \
+            testDebugUnitTest lintDevOta :app:assembleDevOta \
+            -PdevOtaVersionCode="$DEV_OTA_VERSION_CODE" \
+            -PdevOtaVersionName="$DEV_OTA_VERSION_NAME"
+
+      - name: Package and verify signed development OTA
+        run: |
+          apk="$(find app/build/outputs/apk/devOta -type f -name '*.apk' | head -n 1)"
+          test -f "$apk"
+          ./scripts/package-dev-ota.sh "$apk" artifacts-dev-ota "$GITHUB_SHA"
+          ./scripts/verify-packaged-ota.sh artifacts-dev-ota
+
+      - name: Upload verified development artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: CamX-dev-ota-${{ github.sha }}
+          path: artifacts-dev-ota/
+          if-no-files-found: error
+          retention-days: 21
+
+  publish_dev_ota:
+    name: Publish green development OTA
+    if: ${{ github.event_name == 'push' }}
+    needs: validate
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/dev-ota.yml
+    with:
+      source_sha: ${{ github.sha }}
+      source_run_id: ${{ github.run_id }}

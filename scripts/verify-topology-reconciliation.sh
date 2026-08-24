@@ -101,7 +101,7 @@ reject 'RAW capture implementation in CAMX-107' \
   '\bImageReader\b|\bAImageReader\b|\bDngCreator\b|\bRAW_SENSOR\b.*(?:capture|request)' \
   "$topology_root" app/src/main/java/com/sahidcode404/camx/core/camera/discovery
 
-if rg --line-number 'camera2ndk' "$cmake"; then
+if rg --line-number '^[[:space:]]*[^#].*camera2ndk' "$cmake"; then
   echo 'CAMX-107 topology boundary violation: libcamx_core must not strongly link camera2ndk.' >&2
   failures=$((failures + 1))
 fi

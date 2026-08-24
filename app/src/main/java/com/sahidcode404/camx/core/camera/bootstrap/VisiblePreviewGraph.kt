@@ -41,8 +41,11 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     )
 
     fun publishSurface(binding: PreviewSurfaceBinding) {
-        val replaced = surfaceBridge.publish(binding)
-        if (replaced != null) coordinator.surfaceInvalidated(replaced)
+        when (val change = surfaceBridge.publish(binding)) {
+            SurfacePublication.Unchanged -> Unit
+            is SurfacePublication.Replaced -> coordinator.surfaceInvalidated(change.previousIdentity)
+            is SurfacePublication.ViewportChanged -> coordinator.surfaceInvalidated(change.identity)
+        }
     }
 
     fun surfaceDestroyed(identity: PreviewSurfaceIdentity) {
@@ -60,16 +63,26 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     }
 }
 
+internal sealed interface SurfacePublication {
+    data object Unchanged : SurfacePublication
+    data class Replaced(val previousIdentity: PreviewSurfaceIdentity) : SurfacePublication
+    data class ViewportChanged(val identity: PreviewSurfaceIdentity) : SurfacePublication
+}
+
 internal class AndroidVisiblePreviewSurfaceBridge : VisiblePreviewSurfacePort, AutoCloseable {
     private val provider = GenerationSafePreviewSurfaceProvider()
     private val currentBinding = MutableStateFlow<PreviewSurfaceBinding?>(null)
 
-    /** Returns the replaced identity, if this publication replaced a different current Surface. */
-    fun publish(binding: PreviewSurfaceBinding): PreviewSurfaceIdentity? {
-        val previous = currentBinding.value?.identity
+    fun publish(binding: PreviewSurfaceBinding): SurfacePublication {
+        val previous = currentBinding.value
         provider.publish(binding)
         currentBinding.value = binding
-        return previous?.takeIf { it != binding.identity }
+        return when {
+            previous == null -> SurfacePublication.Unchanged
+            previous.identity != binding.identity -> SurfacePublication.Replaced(previous.identity)
+            previous.viewSize != binding.viewSize -> SurfacePublication.ViewportChanged(binding.identity)
+            else -> SurfacePublication.Unchanged
+        }
     }
 
     /** Returns true only when the destroyed identity was current. */

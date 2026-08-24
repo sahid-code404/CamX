@@ -17,6 +17,7 @@ import com.sahidcode404.camx.core.camera.model.IntSize
 import com.sahidcode404.camx.core.camera.model.LensFacing
 import com.sahidcode404.camx.core.camera.model.PhysicalCameraId
 import com.sahidcode404.camx.core.camera.model.PreviewStreamType
+import java.security.MessageDigest
 import java.util.Collections
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.ensureActive
@@ -29,8 +30,7 @@ const val AUX_MAX_PREVIEW_STREAMS = 128
 const val AUX_MAX_FPS_RANGES = 64
 const val AUX_MAX_RAW_SIZES = 64
 
-/** Bounded immutable metadata record. Camera identifiers remain opaque strings. */
-data class JavaAdvertisedCameraRecord(
+internal data class JavaAdvertisedCameraRecord(
     val queriedId: String,
     val facing: LensFacing,
     val focalLengthsMillimetres: List<Float>,
@@ -68,42 +68,56 @@ data class JavaAdvertisedEvidenceFailure(
 )
 
 data class JavaAdvertisedEvidenceReport(
-    val snapshot: CameraEvidenceSnapshot,
+    val snapshots: List<CameraEvidenceSnapshot>,
     val failures: List<JavaAdvertisedEvidenceFailure>,
-)
+) {
+    fun snapshotFor(source: CameraRouteSource): CameraEvidenceSnapshot? =
+        snapshots.firstOrNull { it.source == source }
+}
 
 /**
- * Full public Camera2 advertised evidence backend for CAMX-107.
+ * Full public Camera2 advertised evidence collector for CAMX-107.
  *
- * STARTUP_SEED deliberately returns no work: the frozen CAMX-102 seed path remains the first-frame
- * bootstrap. ADVERTISED/DEEP are bounded metadata-only passes and never acquire a CameraDevice.
+ * It also implements CameraEvidenceBackend as the JAVA_PUBLIC view so existing backend contracts
+ * remain usable. Full reconciliation calls discoverReport() once and consumes both the JAVA_PUBLIC
+ * and JAVA_PHYSICAL snapshots, avoiding a repeated characteristics pass.
+ *
+ * STARTUP_SEED deliberately performs no work: the frozen CAMX-102 path remains the first-frame
+ * bootstrap. ADVERTISED/DEEP are bounded metadata-only passes and never acquire camera resources.
  */
-class AndroidAdvertisedCameraEvidenceBackend(
+internal class AndroidAdvertisedCameraEvidenceBackend(
     cameraManager: CameraManager,
     private val environment: CameraEnvironmentFingerprint,
     private val clockNanos: () -> Long = SystemClock::elapsedRealtimeNanos,
     private val source: JavaAdvertisedCameraMetadataSource = AndroidJavaAdvertisedCameraMetadataSource(cameraManager),
 ) : CameraEvidenceBackend {
-    override suspend fun discover(depth: DiscoveryDepth): CameraEvidenceSnapshot = discoverReport(depth).snapshot
+    override suspend fun discover(depth: DiscoveryDepth): CameraEvidenceSnapshot =
+        discoverReport(depth).snapshotFor(CameraRouteSource.JAVA_PUBLIC)
+            ?: emptySnapshot(CameraRouteSource.JAVA_PUBLIC)
 
     suspend fun discoverReport(depth: DiscoveryDepth): JavaAdvertisedEvidenceReport {
-        if (depth == DiscoveryDepth.STARTUP_SEED) return report(emptyList(), emptyList())
+        if (depth == DiscoveryDepth.STARTUP_SEED) {
+            return JavaAdvertisedEvidenceReport(
+                snapshots = immutableList(listOf(emptySnapshot(CameraRouteSource.JAVA_PUBLIC))),
+                failures = emptyList(),
+            )
+        }
         coroutineContext.ensureActive()
         val failures = ArrayList<JavaAdvertisedEvidenceFailure>()
         val ids = try {
             source.advertisedIds().toList()
         } catch (_: Exception) {
             failures += JavaAdvertisedEvidenceFailure(JavaAdvertisedEvidenceFailureKind.ID_ENUMERATION_UNAVAILABLE)
-            return report(emptyList(), failures)
+            return report(emptyList(), emptyList(), failures)
         }
         if (ids.size > AUX_MAX_PUBLIC_IDS) {
             failures += JavaAdvertisedEvidenceFailure(JavaAdvertisedEvidenceFailureKind.PUBLIC_ID_LIMIT_EXCEEDED)
-            return report(emptyList(), failures)
+            return report(emptyList(), emptyList(), failures)
         }
 
-        val evidence = ArrayList<CameraMetadataEvidence>()
-        val stableIds = ids.asSequence().distinct().sortedWith(::opaqueCompare).toList()
-        for (rawId in stableIds) {
+        val publicEvidence = ArrayList<CameraMetadataEvidence>()
+        val physicalEvidence = ArrayList<CameraMetadataEvidence>()
+        for (rawId in ids.asSequence().distinct().sortedWith(::opaqueCompare)) {
             coroutineContext.ensureActive()
             if (rawId.isBlank()) {
                 failures += JavaAdvertisedEvidenceFailure(
@@ -114,20 +128,19 @@ class AndroidAdvertisedCameraEvidenceBackend(
             }
             val publicRecord = readBounded(rawId, failures, physical = false) ?: continue
             val parentId = CameraTransportId(rawId)
-            evidence += publicRecord.toEvidence(
+            publicEvidence += publicRecord.toEvidence(
                 source = CameraRouteSource.JAVA_PUBLIC,
                 transportId = parentId,
             )
 
-            val physicalIds = publicRecord.physicalIds
-            if (physicalIds.size > AUX_MAX_PHYSICAL_IDS_PER_LOGICAL) {
+            if (publicRecord.physicalIds.size > AUX_MAX_PHYSICAL_IDS_PER_LOGICAL) {
                 failures += JavaAdvertisedEvidenceFailure(
                     JavaAdvertisedEvidenceFailureKind.PHYSICAL_ID_LIMIT_EXCEEDED,
                     transportId = rawId,
                 )
                 continue
             }
-            for (rawPhysicalId in physicalIds.asSequence().distinct().sortedWith(::opaqueCompare)) {
+            for (rawPhysicalId in publicRecord.physicalIds.asSequence().distinct().sortedWith(::opaqueCompare)) {
                 coroutineContext.ensureActive()
                 if (rawPhysicalId.isBlank()) {
                     failures += JavaAdvertisedEvidenceFailure(
@@ -139,9 +152,7 @@ class AndroidAdvertisedCameraEvidenceBackend(
                 }
                 val physicalRecord = readBounded(rawPhysicalId, failures, physical = true)
                 val physicalId = PhysicalCameraId(rawPhysicalId)
-                evidence += if (physicalRecord == null) {
-                    // Public logical membership is useful evidence even when the physical metadata query is
-                    // inaccessible. Do not fabricate independent open support or copy parent capabilities.
+                physicalEvidence += if (physicalRecord == null) {
                     CameraMetadataEvidence(
                         source = CameraRouteSource.JAVA_PHYSICAL,
                         transportId = parentId,
@@ -159,7 +170,11 @@ class AndroidAdvertisedCameraEvidenceBackend(
                 }
             }
         }
-        return report(evidence.sortedBy(::evidenceKey), failures)
+        return report(
+            publicEvidence.sortedBy(::evidenceKey),
+            physicalEvidence.sortedBy(::evidenceKey),
+            failures,
+        )
     }
 
     private fun readBounded(
@@ -199,16 +214,37 @@ class AndroidAdvertisedCameraEvidenceBackend(
     }
 
     private fun report(
-        evidence: List<CameraMetadataEvidence>,
+        publicEvidence: List<CameraMetadataEvidence>,
+        physicalEvidence: List<CameraMetadataEvidence>,
         failures: List<JavaAdvertisedEvidenceFailure>,
-    ) = JavaAdvertisedEvidenceReport(
-        snapshot = CameraEvidenceSnapshot(
+    ): JavaAdvertisedEvidenceReport {
+        val completedAt = clockNanos().coerceAtLeast(0L)
+        val snapshots = ArrayList<CameraEvidenceSnapshot>(2)
+        snapshots += CameraEvidenceSnapshot(
             source = CameraRouteSource.JAVA_PUBLIC,
             environment = environment,
-            evidence = immutableList(evidence),
-            completedAtElapsedRealtimeNs = clockNanos().coerceAtLeast(0L),
-        ),
-        failures = immutableList(failures),
+            evidence = immutableList(publicEvidence),
+            completedAtElapsedRealtimeNs = completedAt,
+        )
+        if (physicalEvidence.isNotEmpty()) {
+            snapshots += CameraEvidenceSnapshot(
+                source = CameraRouteSource.JAVA_PHYSICAL,
+                environment = environment,
+                evidence = immutableList(physicalEvidence),
+                completedAtElapsedRealtimeNs = completedAt,
+            )
+        }
+        return JavaAdvertisedEvidenceReport(
+            snapshots = immutableList(snapshots),
+            failures = immutableList(failures),
+        )
+    }
+
+    private fun emptySnapshot(source: CameraRouteSource) = CameraEvidenceSnapshot(
+        source = source,
+        environment = environment,
+        evidence = emptyList(),
+        completedAtElapsedRealtimeNs = clockNanos().coerceAtLeast(0L),
     )
 
     private fun JavaAdvertisedCameraRecord.toEvidence(
@@ -240,7 +276,7 @@ class AndroidAdvertisedCameraEvidenceBackend(
     private companion object {
         fun opaqueCompare(left: String, right: String): Int = stableOpaqueKey(left).compareTo(stableOpaqueKey(right))
 
-        fun stableOpaqueKey(value: String): String = java.security.MessageDigest.getInstance("SHA-256")
+        fun stableOpaqueKey(value: String): String = MessageDigest.getInstance("SHA-256")
             .digest(value.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
 
@@ -262,7 +298,7 @@ internal class AndroidJavaAdvertisedCameraMetadataSource(
 ) : JavaAdvertisedCameraMetadataSource {
     override fun advertisedIds(): List<String> = cameraManager.cameraIdList.toList()
 
-    override fun read(id: String): JavaAdvertisedCameraRecord? {
+    override fun read(id: String): JavaAdvertisedCameraRecord {
         val characteristics = cameraManager.getCameraCharacteristics(id)
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         val capabilitiesArray = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES).orEmpty()
@@ -305,11 +341,12 @@ internal class AndroidJavaAdvertisedCameraMetadataSource(
                 .sortedWith(compareBy({ it.area }, { it.width }, { it.height }))
                 .toList()
         } else emptyList()
-
         val focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS).orEmpty()
-            .asSequence().filter { it.isFinite() && it > 0f }.distinct().sorted().take(AUX_MAX_FOCAL_LENGTHS + 1).toList()
+            .asSequence().filter { it.isFinite() && it > 0f }.distinct().sorted()
+            .take(AUX_MAX_FOCAL_LENGTHS + 1).toList()
         val apertures = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES).orEmpty()
-            .asSequence().filter { it.isFinite() && it > 0f }.distinct().sorted().take(AUX_MAX_APERTURES + 1).toList()
+            .asSequence().filter { it.isFinite() && it > 0f }.distinct().sorted()
+            .take(AUX_MAX_APERTURES + 1).toList()
         val physicalSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
             ?.takeIf { it.width.isFinite() && it.height.isFinite() && it.width > 0f && it.height > 0f }
         val activeRect = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
@@ -333,8 +370,10 @@ internal class AndroidJavaAdvertisedCameraMetadataSource(
             focalLengthsMillimetres = immutableList(focalLengths),
             sensorPhysicalWidthMillimetres = physicalSize?.width,
             sensorPhysicalHeightMillimetres = physicalSize?.height,
-            activeArray = activeRect?.takeIf { it.width() > 0 && it.height() > 0 }?.let { IntSize(it.width(), it.height()) },
-            pixelArray = pixelSize?.takeIf { it.width > 0 && it.height > 0 }?.let { IntSize(it.width, it.height) },
+            activeArray = activeRect?.takeIf { it.width() > 0 && it.height() > 0 }
+                ?.let { IntSize(it.width(), it.height()) },
+            pixelArray = pixelSize?.takeIf { it.width > 0 && it.height > 0 }
+                ?.let { IntSize(it.width, it.height) },
             sensorOrientationDegrees = orientation,
             apertureValues = immutableList(apertures),
             colorFilterArrangement = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT),

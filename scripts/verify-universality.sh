@@ -12,13 +12,15 @@ reject() {
   local pattern="$2"
   shift 2
   local matches
-  if matches="$(rg --line-number --pcre2 "$pattern" "$@")"; then
+  if matches="$(rg --line-number "$pattern" "$@")"; then
+    echo "::error title=Universality policy violation::$label"
     echo "Universality violation: $label" >&2
     echo "$matches" >&2
     failures=$((failures + 1))
   else
     local status=$?
     if ((status != 1)); then
+      echo "::error title=Universality scanner failure::$label (rg exit $status)"
       echo "Universality guard failed to scan: $label (rg exit $status)" >&2
       failures=$((failures + 1))
     fi

@@ -9,9 +9,10 @@ if rg --line-number '<service\b|<receiver\b' app/src/main/AndroidManifest.xml; t
   echo 'Component violation: background service/receiver declared.' >&2
   failures=$((failures + 1))
 fi
-if rg --line-number --pcre2 \
+if rg --line-number \
   '\b(?:Service|ForegroundService|JobService|WorkManager|CoroutineWorker|ListenableWorker)\b' \
   --glob '*.kt' --glob '*.java' app/src/main/java; then
+  echo '::error title=Background component policy violation::Service or worker API found in app source.'
   echo 'Component violation: service/worker API in application source.' >&2
   failures=$((failures + 1))
 fi

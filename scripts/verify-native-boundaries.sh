@@ -11,14 +11,16 @@ if rg --line-number '\bACameraManager_openCamera\b|\bACameraDevice\b|\bACameraCa
   echo 'Native boundary violation: Camera NDK control plane is not authorized.' >&2
   failures=$((failures + 1))
 fi
-if rg --line-number --pcre2 '\b(?:dlopen|android_dlopen_ext)\s*\([^\n]*(?:vendor|camera\.so)' \
+if rg --line-number '\b(?:dlopen|android_dlopen_ext)\s*\([^\n]*(?:vendor|camera\.so)' \
   --glob '*.c' --glob '*.cc' --glob '*.cpp' --glob '*.cxx' native/core; then
+  echo '::error title=Native boundary violation::Private vendor camera library loading found.'
   echo 'Native boundary violation: private vendor camera library loading.' >&2
   failures=$((failures + 1))
 fi
-if rg --line-number --pcre2 '\bvoid\s*\*\s*(?:owner|owned|image|buffer|handle)\b' \
+if rg --line-number '\bvoid\s*\*\s*(?:owner|owned|image|buffer|handle)\b' \
   --glob '*.c' --glob '*.cc' --glob '*.cpp' --glob '*.cxx' \
   --glob '*.h' --glob '*.hpp' --glob '*.hxx' native/core; then
+  echo '::error title=Native boundary violation::Owning bare void pointer found.'
   echo 'Native boundary violation: owning bare void pointer.' >&2
   failures=$((failures + 1))
 fi

@@ -19,16 +19,17 @@ if [[ -n "$open_calls" ]] && printf '%s\n' "$open_calls" | rg --quiet -v "^${own
   failures=$((failures + 1))
 fi
 open_count="$(printf '%s\n' "$open_calls" | sed '/^$/d' | wc -l)"
-if ((open_count > 1)); then
-  echo "Camera ownership violation: expected at most one openCamera call, found $open_count." >&2
+if ((open_count != 1)); then
+  echo "Camera ownership violation: expected exactly one openCamera call, found $open_count." >&2
+  printf '%s\n' "$open_calls" >&2
   failures=$((failures + 1))
 fi
 
 ownership_imports="$(rg --line-number \
   '^import android\.hardware\.camera2\.(CameraDevice|CameraCaptureSession)(?:\s+as\s+\w+)?\s*$|^import android\.hardware\.camera2\.\*' \
   app/src/main/java 2>/dev/null || true)"
-if [[ -n "$ownership_imports" ]] && printf '%s\n' "$ownership_imports" | rg --quiet -v '/core/camera/session/'; then
-  echo 'Camera ownership violation: CameraDevice/session type outside the sole owner boundary.' >&2
+if [[ -n "$ownership_imports" ]] && printf '%s\n' "$ownership_imports" | rg --quiet -v "^${owner}:"; then
+  echo 'Camera ownership violation: CameraDevice/session type outside CameraSessionController.' >&2
   printf '%s\n' "$ownership_imports" >&2
   failures=$((failures + 1))
 fi
@@ -56,7 +57,12 @@ for requirement in \
   'private val mutationGate = CameraStateMutationGate(callbackDispatcher)' \
   'private val asyncOwnership = CameraAsyncOwnership()' \
   'CameraGenerationGate' \
-  'HandlerThread("camx-camera-control")'; do
+  'HandlerThread("camx-camera-control")' \
+  'cameraManager.openCamera(' \
+  'camera.createCaptureSession(' \
+  'CameraDevice.TEMPLATE_PREVIEW' \
+  'setRepeatingRequest(' \
+  'PendingCameraStage.FIRST_FRAME'; do
   if ! rg --fixed-strings --quiet "$requirement" "$owner"; then
     echo "Camera ownership requirement missing: $requirement" >&2
     failures=$((failures + 1))

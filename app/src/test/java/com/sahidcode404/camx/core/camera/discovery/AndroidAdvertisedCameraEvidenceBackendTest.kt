@@ -3,15 +3,17 @@ package com.sahidcode404.camx.core.camera.discovery
 import com.sahidcode404.camx.core.camera.model.CameraCapabilities
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraFpsCapability
+import com.sahidcode404.camx.core.camera.model.CameraMetadataEvidence
 import com.sahidcode404.camx.core.camera.model.CameraRouteSource
 import com.sahidcode404.camx.core.camera.model.CameraStreamCapability
 import com.sahidcode404.camx.core.camera.model.IntSize
 import com.sahidcode404.camx.core.camera.model.LensFacing
 import com.sahidcode404.camx.core.camera.model.PreviewStreamType
-import kotlinx.coroutines.runBlocking
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.startCoroutine
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,7 +21,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     private val environment = CameraEnvironmentFingerprint("camx-107-test")
 
     @Test
-    fun `startup seed depth performs no advertised reads`() = runBlocking {
+    fun `startup seed depth performs no advertised reads`() = runSuspend {
         val source = FakeSource(listOf("opaque-a"), mutableMapOf("opaque-a" to record("opaque-a")))
         val report = backend(source).discoverReport(DiscoveryDepth.STARTUP_SEED)
 
@@ -28,7 +30,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `one rear public route retains bounded metadata`() = runBlocking {
+    fun `one rear public route retains bounded metadata`() = runSuspend {
         val source = FakeSource(
             listOf("rear-token"),
             mutableMapOf("rear-token" to record("rear-token", facing = LensFacing.BACK)),
@@ -47,7 +49,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `front and rear public routes are both preserved without id role semantics`() = runBlocking {
+    fun `front and rear public routes are both preserved without id role semantics`() = runSuspend {
         val source = FakeSource(
             listOf("0", "9"),
             mutableMapOf(
@@ -64,7 +66,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `logical parent emits physical member routes through parent`() = runBlocking {
+    fun `logical parent emits physical member routes through parent`() = runSuspend {
         val parent = record("logical-x", physicalIds = listOf("wide-member", "tele-member"))
         val source = FakeSource(
             listOf("logical-x"),
@@ -85,7 +87,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `inaccessible physical member keeps relationship without fabricated capabilities`() = runBlocking {
+    fun `inaccessible physical member keeps relationship without fabricated capabilities`() = runSuspend {
         val source = FakeSource(
             listOf("logical"),
             mutableMapOf("logical" to record("logical", physicalIds = listOf("hidden-member"))),
@@ -104,7 +106,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `one broken public id does not erase valid public evidence`() = runBlocking {
+    fun `one broken public id does not erase valid public evidence`() = runSuspend {
         val source = FakeSource(
             listOf("broken", "valid"),
             mutableMapOf("valid" to record("valid")),
@@ -112,12 +114,17 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
         )
         val report = backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
 
-        assertEquals(listOf("valid"), report.snapshotFor(CameraRouteSource.JAVA_PUBLIC)!!.evidence.map { it.transportId.value })
-        assertTrue(report.failures.any { it.kind == JavaAdvertisedEvidenceFailureKind.CHARACTERISTICS_UNAVAILABLE })
+        assertEquals(
+            listOf("valid"),
+            report.snapshotFor(CameraRouteSource.JAVA_PUBLIC)!!.evidence.map { it.transportId.value },
+        )
+        assertTrue(report.failures.any {
+            it.kind == JavaAdvertisedEvidenceFailureKind.CHARACTERISTICS_UNAVAILABLE
+        })
     }
 
     @Test
-    fun `missing optional optics remain valid evidence`() = runBlocking {
+    fun `missing optional optics remain valid evidence`() = runSuspend {
         val sparse = record("sparse").copy(
             focalLengthsMillimetres = emptyList(),
             sensorPhysicalWidthMillimetres = null,
@@ -135,7 +142,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `reordered ids and duplicate ids produce identical evidence order`() = runBlocking {
+    fun `reordered ids and duplicate ids produce identical evidence order`() = runSuspend {
         val records = mutableMapOf(
             "alpha" to record("alpha"),
             "beta" to record("beta", focal = 7.0f),
@@ -152,18 +159,21 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `public id count overflow fails closed before any characteristics read`() = runBlocking {
+    fun `public id count overflow fails closed before any characteristics read`() = runSuspend {
         val ids = (0..AUX_MAX_PUBLIC_IDS).map { "opaque-$it" }
         val source = FakeSource(ids, mutableMapOf())
         val report = backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
 
         assertTrue(report.snapshotFor(CameraRouteSource.JAVA_PUBLIC)!!.evidence.isEmpty())
         assertTrue(source.reads.isEmpty())
-        assertEquals(JavaAdvertisedEvidenceFailureKind.PUBLIC_ID_LIMIT_EXCEEDED, report.failures.single().kind)
+        assertEquals(
+            JavaAdvertisedEvidenceFailureKind.PUBLIC_ID_LIMIT_EXCEEDED,
+            report.failures.single().kind,
+        )
     }
 
     @Test
-    fun `physical id count overflow preserves logical route and skips member reads`() = runBlocking {
+    fun `physical id count overflow preserves logical route and skips member reads`() = runSuspend {
         val ids = (0..AUX_MAX_PHYSICAL_IDS_PER_LOGICAL).map { "member-$it" }
         val source = FakeSource(
             listOf("logical"),
@@ -174,11 +184,13 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
         assertEquals(1, report.snapshotFor(CameraRouteSource.JAVA_PUBLIC)!!.evidence.size)
         assertEquals(listOf("logical"), source.reads)
         assertTrue(report.snapshotFor(CameraRouteSource.JAVA_PHYSICAL) == null)
-        assertTrue(report.failures.any { it.kind == JavaAdvertisedEvidenceFailureKind.PHYSICAL_ID_LIMIT_EXCEEDED })
+        assertTrue(report.failures.any {
+            it.kind == JavaAdvertisedEvidenceFailureKind.PHYSICAL_ID_LIMIT_EXCEEDED
+        })
     }
 
     @Test
-    fun `metadata list overflow rejects only offending route`() = runBlocking {
+    fun `metadata list overflow rejects only offending route`() = runSuspend {
         val tooManyFocals = (1..AUX_MAX_FOCAL_LENGTHS + 1).map(Int::toFloat)
         val source = FakeSource(
             listOf("oversized", "valid"),
@@ -189,19 +201,29 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
         )
         val report = backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
 
-        assertEquals(listOf("valid"), report.snapshotFor(CameraRouteSource.JAVA_PUBLIC)!!.evidence.map { it.transportId.value })
-        assertTrue(report.failures.any { it.kind == JavaAdvertisedEvidenceFailureKind.METADATA_BOUND_EXCEEDED })
+        assertEquals(
+            listOf("valid"),
+            report.snapshotFor(CameraRouteSource.JAVA_PUBLIC)!!.evidence.map { it.transportId.value },
+        )
+        assertTrue(report.failures.any {
+            it.kind == JavaAdvertisedEvidenceFailureKind.METADATA_BOUND_EXCEEDED
+        })
     }
 
     @Test
-    fun `published evidence and failures are immutable`() = runBlocking {
+    fun `published evidence and failures reject mutation`() = runSuspend {
         val source = FakeSource(listOf("rear"), mutableMapOf("rear" to record("rear")))
         val report = backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
         val evidence = report.snapshotFor(CameraRouteSource.JAVA_PUBLIC)!!.evidence
 
-        assertNotNull(evidence)
-        assertFalse(evidence is MutableList<*>)
-        assertFalse(report.failures is MutableList<*>)
+        assertThrows(UnsupportedOperationException::class.java) {
+            @Suppress("UNCHECKED_CAST")
+            (evidence as MutableList<CameraMetadataEvidence>).clear()
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            @Suppress("UNCHECKED_CAST")
+            (report.failures as MutableList<JavaAdvertisedEvidenceFailure>).clear()
+        }
     }
 
     private fun backend(source: JavaAdvertisedCameraMetadataSource) =
@@ -236,6 +258,20 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
         ),
         physicalIds = physicalIds,
     )
+
+    private fun <T> runSuspend(block: suspend () -> T): T {
+        var outcome: Result<T>? = null
+        block.startCoroutine(
+            object : Continuation<T> {
+                override val context = EmptyCoroutineContext
+
+                override fun resumeWith(result: Result<T>) {
+                    outcome = result
+                }
+            },
+        )
+        return checkNotNull(outcome) { "Test coroutine did not complete synchronously" }.getOrThrow()
+    }
 
     private class FakeSource(
         private val ids: List<String>,

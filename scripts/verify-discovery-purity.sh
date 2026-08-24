@@ -4,13 +4,16 @@ set -euo pipefail
 readonly root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 readonly discovery_root="app/src/main/java/com/sahidcode404/camx/core/camera/discovery"
+readonly seed_source="$discovery_root/AndroidPublicCameraSeedSource.kt"
+readonly seed_resolver="$discovery_root/MinimalFirstInstallSeedDiscovery.kt"
 failures=0
 
-reject() {
+reject_in() {
   local label="$1"
   local pattern="$2"
+  shift 2
   local matches
-  if matches="$(rg --line-number "$pattern" --glob '*.kt' "$discovery_root")"; then
+  if matches="$(rg --line-number "$pattern" --glob '*.kt' "$@" 2>/dev/null)"; then
     echo "::error title=Discovery purity violation::$label"
     echo "Discovery purity violation: $label" >&2
     echo "$matches" >&2
@@ -24,17 +27,26 @@ reject() {
   fi
 }
 
-reject 'camera device/session ownership API' \
-  '\bCameraDevice\b|\bCameraCaptureSession\b|\bopenCamera\s*\(|\bcreateCaptureSession\b|\bsetRepeating(?:Request|Burst)\b|\bcapture(?:Burst)?\s*\('
-reject 'later camera-owner or topology implementation dependency' \
-  '^import com\.sahidcode404\.camx\.core\.camera\.(?:session|runtime|topology|raw)\.'
-reject 'native/deep-discovery dependency' \
-  '^import com\.sahidcode404\.camx\.core\.camera\.diagnostics\.Native|\bSystem\.loadLibrary\s*\('
-reject 'update or OTA dependency' '^import com\.sahidcode404\.camx\.core\.update\.'
-reject 'unbounded discovery concurrency' \
-  '\bGlobalScope\b|\bExecutors\b|\bnewFixedThreadPool\b|\bThread\s*\(|\basync\s*\{|\blaunch\s*\{'
-reject 'complete/deep stream or RAW enumeration' \
-  '\bgetOutputFormats\s*\(|\bgetHighResolutionOutputSizes\s*\(|\bgetHighSpeedVideo|\bRAW_SENSOR\b|REQUEST_AVAILABLE_CAPABILITIES_RAW|physicalCameraIds'
+# Every discovery backend remains metadata-only and non-owning.
+reject_in 'camera device/session ownership API' \
+  '\bCameraDevice\b|\bCameraCaptureSession\b|\bopenCamera\s*\(|\bcreateCaptureSession\b|\bsetRepeating(?:Request|Burst)\b|\bcapture(?:Burst)?\s*\(' \
+  "$discovery_root"
+reject_in 'camera-owner implementation dependency' \
+  '^import com\.sahidcode404\.camx\.core\.camera\.(?:session|runtime|raw)\.' \
+  "$discovery_root"
+reject_in 'update or OTA dependency' '^import com\.sahidcode404\.camx\.core\.update\.' "$discovery_root"
+reject_in 'unbounded discovery concurrency' \
+  '\bGlobalScope\b|\bExecutors\b|\bnewFixedThreadPool\b|\bThread\s*\(|\basync\s*\{|\blaunch\s*\{' \
+  "$discovery_root"
+
+# The frozen CAMX-102 first-install seed path must stay minimal even though CAMX-107 adds separate
+# ADVERTISED/DEEP metadata backends in the same package.
+reject_in 'seed depends on native or deep discovery' \
+  '^import com\.sahidcode404\.camx\.core\.camera\.diagnostics\.Native|\bSystem\.loadLibrary\s*\(' \
+  "$seed_source" "$seed_resolver"
+reject_in 'seed performs complete stream RAW or physical enumeration' \
+  '\bgetOutputFormats\s*\(|\bgetHighResolutionOutputSizes\s*\(|\bgetHighSpeedVideo|\bRAW_SENSOR\b|REQUEST_AVAILABLE_CAPABILITIES_RAW|physicalCameraIds' \
+  "$seed_source" "$seed_resolver"
 
 for requirement in \
   'cameraManager.cameraIdList' \
@@ -48,7 +60,7 @@ for requirement in \
   'SEED_MAX_ADVERTISED_IDS = 64' \
   'SEED_MAX_FOCAL_LENGTHS = 16' \
   'metadataTrust = CameraTrust.ADVERTISED'; do
-  if ! rg --fixed-strings --quiet "$requirement" "$discovery_root"; then
+  if ! rg --fixed-strings --quiet "$requirement" "$seed_source" "$seed_resolver"; then
     echo "CAMX-102 discovery requirement missing: $requirement" >&2
     failures=$((failures + 1))
   fi

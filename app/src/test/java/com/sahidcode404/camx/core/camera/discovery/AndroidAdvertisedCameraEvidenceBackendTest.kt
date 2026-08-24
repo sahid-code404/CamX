@@ -227,7 +227,11 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     private fun backend(source: JavaAdvertisedCameraMetadataSource) =
-        AndroidAdvertisedCameraEvidenceBackend(environment, source) { 123L }
+        AndroidAdvertisedCameraEvidenceBackend(
+            environment = environment,
+            clockNanos = { 123L },
+            source = source,
+        )
 
     private fun record(
         id: String,

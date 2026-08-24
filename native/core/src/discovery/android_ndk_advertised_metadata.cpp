@@ -55,14 +55,20 @@ class DynamicLibrary final {
 };
 
 struct CameraNdkFunctions final {
-  using CreateManager = decltype(&ACameraManager_create);
-  using DeleteManager = decltype(&ACameraManager_delete);
-  using GetCameraIdList = decltype(&ACameraManager_getCameraIdList);
-  using DeleteCameraIdList = decltype(&ACameraManager_deleteCameraIdList);
-  using GetCameraCharacteristics = decltype(&ACameraManager_getCameraCharacteristics);
-  using FreeMetadata = decltype(&ACameraMetadata_free);
-  using GetAllTags = decltype(&ACameraMetadata_getAllTags);
-  using GetConstEntry = decltype(&ACameraMetadata_getConstEntry);
+  // Deliberately spell the ABI signatures rather than using decltype on the
+  // API-24 declarations. This translation unit is compiled at android-23 and
+  // must never take the address of an unavailable Camera-NDK symbol.
+  using CreateManager = ACameraManager* (*)();
+  using DeleteManager = void (*)(ACameraManager*);
+  using GetCameraIdList = camera_status_t (*)(ACameraManager*, ACameraIdList**);
+  using DeleteCameraIdList = void (*)(ACameraIdList*);
+  using GetCameraCharacteristics =
+      camera_status_t (*)(ACameraManager*, const char*, ACameraMetadata**);
+  using FreeMetadata = void (*)(ACameraMetadata*);
+  using GetAllTags =
+      camera_status_t (*)(const ACameraMetadata*, std::int32_t*, const std::uint32_t**);
+  using GetConstEntry =
+      camera_status_t (*)(const ACameraMetadata*, std::uint32_t, ACameraMetadata_const_entry*);
 
   CreateManager create_manager = nullptr;
   DeleteManager delete_manager = nullptr;

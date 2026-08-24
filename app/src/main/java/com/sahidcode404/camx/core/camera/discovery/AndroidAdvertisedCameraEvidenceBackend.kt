@@ -85,12 +85,27 @@ data class JavaAdvertisedEvidenceReport(
  * STARTUP_SEED deliberately performs no work: the frozen CAMX-102 path remains the first-frame
  * bootstrap. ADVERTISED/DEEP are bounded metadata-only passes and never acquire camera resources.
  */
-internal class AndroidAdvertisedCameraEvidenceBackend(
-    cameraManager: CameraManager,
+internal class AndroidAdvertisedCameraEvidenceBackend private constructor(
     private val environment: CameraEnvironmentFingerprint,
-    private val clockNanos: () -> Long = SystemClock::elapsedRealtimeNanos,
-    private val source: JavaAdvertisedCameraMetadataSource = AndroidJavaAdvertisedCameraMetadataSource(cameraManager),
+    private val clockNanos: () -> Long,
+    private val source: JavaAdvertisedCameraMetadataSource,
 ) : CameraEvidenceBackend {
+    constructor(
+        cameraManager: CameraManager,
+        environment: CameraEnvironmentFingerprint,
+        clockNanos: () -> Long = SystemClock::elapsedRealtimeNanos,
+    ) : this(
+        environment = environment,
+        clockNanos = clockNanos,
+        source = AndroidJavaAdvertisedCameraMetadataSource(cameraManager),
+    )
+
+    internal constructor(
+        environment: CameraEnvironmentFingerprint,
+        source: JavaAdvertisedCameraMetadataSource,
+        clockNanos: () -> Long = { 0L },
+    ) : this(environment = environment, clockNanos = clockNanos, source = source)
+
     override suspend fun discover(depth: DiscoveryDepth): CameraEvidenceSnapshot =
         discoverReport(depth).snapshotFor(CameraRouteSource.JAVA_PUBLIC)
             ?: emptySnapshot(CameraRouteSource.JAVA_PUBLIC)

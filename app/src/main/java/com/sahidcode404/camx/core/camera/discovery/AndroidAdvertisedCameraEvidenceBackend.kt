@@ -5,6 +5,8 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Build
 import android.os.SystemClock
+import android.util.Range
+import android.util.Size
 import android.view.SurfaceHolder
 import com.sahidcode404.camx.core.camera.model.CameraCapabilities
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
@@ -76,16 +78,12 @@ data class JavaAdvertisedEvidenceReport(
 }
 
 /**
- * Full public Camera2 advertised evidence collector for CAMX-107.
+ * Bounded public Camera2 metadata collector for CAMX-107.
  *
- * It also implements CameraEvidenceBackend as the JAVA_PUBLIC view so existing backend contracts
- * remain usable. Full reconciliation calls discoverReport() once and consumes both the JAVA_PUBLIC
- * and JAVA_PHYSICAL snapshots, avoiding a repeated characteristics pass.
- *
- * STARTUP_SEED deliberately performs no work: the frozen CAMX-102 path remains the first-frame
- * bootstrap. ADVERTISED/DEEP are bounded metadata-only passes and never acquire camera resources.
+ * The frozen CAMX-102 STARTUP_SEED path remains separate and fast. This backend performs no work at
+ * STARTUP_SEED depth. ADVERTISED/DEEP collect immutable metadata only and never acquire a camera.
  */
-internal class AndroidAdvertisedCameraEvidenceBackend private constructor(
+internal class AndroidAdvertisedCameraEvidenceBackend(
     private val environment: CameraEnvironmentFingerprint,
     private val clockNanos: () -> Long,
     private val source: JavaAdvertisedCameraMetadataSource,
@@ -99,12 +97,6 @@ internal class AndroidAdvertisedCameraEvidenceBackend private constructor(
         clockNanos = clockNanos,
         source = AndroidJavaAdvertisedCameraMetadataSource(cameraManager),
     )
-
-    internal constructor(
-        environment: CameraEnvironmentFingerprint,
-        source: JavaAdvertisedCameraMetadataSource,
-        clockNanos: () -> Long = { 0L },
-    ) : this(environment = environment, clockNanos = clockNanos, source = source)
 
     override suspend fun discover(depth: DiscoveryDepth): CameraEvidenceSnapshot =
         discoverReport(depth).snapshotFor(CameraRouteSource.JAVA_PUBLIC)
@@ -143,10 +135,7 @@ internal class AndroidAdvertisedCameraEvidenceBackend private constructor(
             }
             val publicRecord = readBounded(rawId, failures, physical = false) ?: continue
             val parentId = CameraTransportId(rawId)
-            publicEvidence += publicRecord.toEvidence(
-                source = CameraRouteSource.JAVA_PUBLIC,
-                transportId = parentId,
-            )
+            publicEvidence += publicRecord.toEvidence(CameraRouteSource.JAVA_PUBLIC, parentId)
 
             if (publicRecord.physicalIds.size > AUX_MAX_PHYSICAL_IDS_PER_LOGICAL) {
                 failures += JavaAdvertisedEvidenceFailure(
@@ -155,34 +144,30 @@ internal class AndroidAdvertisedCameraEvidenceBackend private constructor(
                 )
                 continue
             }
-            for (rawPhysicalId in publicRecord.physicalIds.asSequence().distinct().sortedWith(::opaqueCompare)) {
+            for (member in publicRecord.physicalIds.asSequence().distinct().sortedWith(::opaqueCompare)) {
                 coroutineContext.ensureActive()
-                if (rawPhysicalId.isBlank()) {
+                if (member.isBlank()) {
                     failures += JavaAdvertisedEvidenceFailure(
                         JavaAdvertisedEvidenceFailureKind.INVALID_PHYSICAL_ID,
                         transportId = rawId,
-                        physicalId = rawPhysicalId,
+                        physicalId = member,
                     )
                     continue
                 }
-                val physicalRecord = readBounded(rawPhysicalId, failures, physical = true)
-                val physicalId = PhysicalCameraId(rawPhysicalId)
-                physicalEvidence += if (physicalRecord == null) {
-                    CameraMetadataEvidence(
-                        source = CameraRouteSource.JAVA_PHYSICAL,
-                        transportId = parentId,
-                        physicalId = physicalId,
-                        logicalParentId = parentId,
-                        facing = publicRecord.facing,
-                    )
-                } else {
-                    physicalRecord.toEvidence(
-                        source = CameraRouteSource.JAVA_PHYSICAL,
-                        transportId = parentId,
-                        physicalId = physicalId,
-                        logicalParentId = parentId,
-                    )
-                }
+                val physical = readBounded(member, failures, physical = true)
+                val physicalId = PhysicalCameraId(member)
+                physicalEvidence += physical?.toEvidence(
+                    source = CameraRouteSource.JAVA_PHYSICAL,
+                    transportId = parentId,
+                    physicalId = physicalId,
+                    logicalParentId = parentId,
+                ) ?: CameraMetadataEvidence(
+                    source = CameraRouteSource.JAVA_PHYSICAL,
+                    transportId = parentId,
+                    physicalId = physicalId,
+                    logicalParentId = parentId,
+                    facing = publicRecord.facing,
+                )
             }
         }
         return report(
@@ -233,26 +218,23 @@ internal class AndroidAdvertisedCameraEvidenceBackend private constructor(
         physicalEvidence: List<CameraMetadataEvidence>,
         failures: List<JavaAdvertisedEvidenceFailure>,
     ): JavaAdvertisedEvidenceReport {
-        val completedAt = clockNanos().coerceAtLeast(0L)
+        val completed = clockNanos().coerceAtLeast(0L)
         val snapshots = ArrayList<CameraEvidenceSnapshot>(2)
         snapshots += CameraEvidenceSnapshot(
             source = CameraRouteSource.JAVA_PUBLIC,
             environment = environment,
             evidence = immutableList(publicEvidence),
-            completedAtElapsedRealtimeNs = completedAt,
+            completedAtElapsedRealtimeNs = completed,
         )
         if (physicalEvidence.isNotEmpty()) {
             snapshots += CameraEvidenceSnapshot(
                 source = CameraRouteSource.JAVA_PHYSICAL,
                 environment = environment,
                 evidence = immutableList(physicalEvidence),
-                completedAtElapsedRealtimeNs = completedAt,
+                completedAtElapsedRealtimeNs = completed,
             )
         }
-        return JavaAdvertisedEvidenceReport(
-            snapshots = immutableList(snapshots),
-            failures = immutableList(failures),
-        )
+        return JavaAdvertisedEvidenceReport(immutableList(snapshots), immutableList(failures))
     }
 
     private fun emptySnapshot(source: CameraRouteSource) = CameraEvidenceSnapshot(
@@ -297,10 +279,8 @@ internal class AndroidAdvertisedCameraEvidenceBackend private constructor(
 
         fun evidenceKey(value: CameraMetadataEvidence): String = buildString {
             append(stableOpaqueKey(value.transportId.value))
-            append('|')
-            append(value.physicalId?.value?.let(::stableOpaqueKey).orEmpty())
-            append('|')
-            append(value.source.ordinal)
+            append('|').append(value.physicalId?.value?.let(::stableOpaqueKey).orEmpty())
+            append('|').append(value.source.ordinal)
         }
 
         fun <T> immutableList(values: Collection<T>): List<T> =
@@ -316,13 +296,13 @@ internal class AndroidJavaAdvertisedCameraMetadataSource(
     override fun read(id: String): JavaAdvertisedCameraRecord {
         val characteristics = cameraManager.getCameraCharacteristics(id)
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val capabilitiesArray = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES).orEmpty()
-        val rawAdvertised = capabilitiesArray.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
+        val advertised = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
+        val rawAdvertised = advertised.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)
         val logicalAdvertised = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
-            capabilitiesArray.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)
+            advertised.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)
 
-        val previewStreams = map?.getOutputSizes(SurfaceHolder::class.java).orEmpty()
-            .asSequence()
+        val previewSizes: Array<Size> = map?.getOutputSizes(SurfaceHolder::class.java) ?: emptyArray()
+        val previewStreams = previewSizes.asSequence()
             .take(AUX_MAX_PREVIEW_STREAMS + 1)
             .filter { it.width > 0 && it.height > 0 }
             .map { size ->
@@ -330,25 +310,28 @@ internal class AndroidJavaAdvertisedCameraMetadataSource(
                     map?.getOutputMinFrameDuration(SurfaceHolder::class.java, size) ?: 0L
                 }.getOrDefault(0L)
                 CameraStreamCapability(
-                    type = PreviewStreamType.CAMERA2_PRIVATE,
-                    size = IntSize(size.width, size.height),
-                    minimumFrameDurationNs = duration.takeIf { it > 0L },
+                    PreviewStreamType.CAMERA2_PRIVATE,
+                    IntSize(size.width, size.height),
+                    duration.takeIf { it > 0L },
                 )
             }
             .distinct()
             .sortedWith(compareBy({ it.size.area }, { it.size.width }, { it.size.height }))
             .toList()
-        val fpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
-            .asSequence()
+
+        val ranges: Array<Range<Int>> =
+            characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
+        val fpsRanges = ranges.asSequence()
             .take(AUX_MAX_FPS_RANGES + 1)
             .filter { it.lower > 0 && it.upper >= it.lower }
             .map { CameraFpsCapability(it.lower, it.upper) }
             .distinct()
             .sortedWith(compareBy({ it.minimum }, { it.maximum }))
             .toList()
+
         val rawSizes = if (rawAdvertised) {
-            map?.getOutputSizes(ImageFormat.RAW_SENSOR).orEmpty()
-                .asSequence()
+            val sizes: Array<Size> = map?.getOutputSizes(ImageFormat.RAW_SENSOR) ?: emptyArray()
+            sizes.asSequence()
                 .take(AUX_MAX_RAW_SIZES + 1)
                 .filter { it.width > 0 && it.height > 0 }
                 .map { IntSize(it.width, it.height) }
@@ -356,11 +339,14 @@ internal class AndroidJavaAdvertisedCameraMetadataSource(
                 .sortedWith(compareBy({ it.area }, { it.width }, { it.height }))
                 .toList()
         } else emptyList()
-        val focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS).orEmpty()
-            .asSequence().filter { it.isFinite() && it > 0f }.distinct().sorted()
+
+        val focalArray = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) ?: floatArrayOf()
+        val focalLengths = focalArray.asSequence()
+            .filter { it.isFinite() && it > 0f }.distinct().sorted()
             .take(AUX_MAX_FOCAL_LENGTHS + 1).toList()
-        val apertures = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES).orEmpty()
-            .asSequence().filter { it.isFinite() && it > 0f }.distinct().sorted()
+        val apertureArray = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES) ?: floatArrayOf()
+        val apertures = apertureArray.asSequence()
+            .filter { it.isFinite() && it > 0f }.distinct().sorted()
             .take(AUX_MAX_APERTURES + 1).toList()
         val physicalSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
             ?.takeIf { it.width.isFinite() && it.height.isFinite() && it.width > 0f && it.height > 0f }

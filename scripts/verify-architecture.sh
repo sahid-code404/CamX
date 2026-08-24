@@ -65,6 +65,7 @@ done
 ./scripts/verify-discovery-purity.sh
 ./scripts/verify-preview-policy.sh
 bash ./scripts/verify-visible-preview.sh
+bash ./scripts/verify-topology-reconciliation.sh
 ./scripts/verify-development-ota.sh
 
 echo 'Architecture verification passed.'

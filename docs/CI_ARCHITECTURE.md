@@ -9,6 +9,11 @@ requests, and manual validation. Its required order is:
 4. produced-APK package, exact minSdk, v1+v2 signer, size, alignment, ABI, and ELF inspection;
 5. manifest/hash binding and artifact upload only after every prior gate passes.
 
+Pull-request validation explicitly checks out `pull_request.head.sha` rather than treating GitHub's
+synthetic merge SHA as source evidence. Push and manual validation use `github.sha`. The chosen source
+SHA is checked against `git rev-parse HEAD`, propagated into build metadata and artifact naming, and
+reported in the job log so final evidence binds to the exact source commit under review.
+
 The Gradle model and every variant must resolve `minSdk=23`; textual source matching is not the model
 proof. The produced APK is inspected independently and its `uses-sdk` plus development manifest must
 also equal 23. The package verifier requires the permanent signer, both v1 signing for API 23 and v2

@@ -2,6 +2,7 @@ package com.sahidcode404.camx.core.update
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import androidx.core.net.toUri
@@ -17,8 +18,11 @@ class ApkInstaller(private val context: Context) {
         }
     }
 
+    @Suppress("InlinedApi")
     private fun launchInstaller(apk: java.io.File) {
-        if (!context.packageManager.canRequestPackageInstalls()) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !context.packageManager.canRequestPackageInstalls()
+        ) {
             context.startActivity(
                 Intent(
                     Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,

@@ -3,6 +3,49 @@
 Tickets are intentionally small and path-bounded. “Forbidden” is absolute unless a new Tier-A
 architecture ticket supersedes it.
 
+## CAMX-100A — API-23 platform and asynchronous ownership contract
+
+- Tier: A.
+- Goal: make Android API 23 the exact application/native baseline and close the preview fallback,
+  callback-admission, cleanup, native-capability, and validation gaps exposed by lowering the floor.
+- Allowed files: API/build/signing configuration; narrowly required API-23 compatibility fixes in
+  cache/preview/runtime/update/resources; `core/camera/diagnostics/{CameraFailure,NativeCore,
+  NativeCapabilities}.kt`; preview attempt models; session state/controller/mutation/permit ownership;
+  their deterministic tests; `native/core/**`; OTA/native verification scripts; CI/publisher policy;
+  CODEOWNERS, architecture documents, ADR-013, and this ticket.
+- Forbidden files: Camera2 open/configure/repeating-request feature implementation, discovery/topology
+  algorithms, RAW capture/DNG behavior, feature UI expansion, OTA networking, production signing,
+  optional native backend/loader implementation, private/vendor APIs or libraries, and device quirks.
+- Input contracts: Android API-23 baseline; four required ABIs; public Android/NDK API availability;
+  immutable active selection, surface identity, requested/safe-baseline attempt, and built `devOta` APK.
+- Output contracts: exact model/merged-APK/OTA minSdk proof; API-23-loadable baseline core; typed optional
+  native status; requested-to-safe-baseline failure policy; one-shot stage/intent callback and cleanup
+  permits; v1+v2-signed, hash-bound, all-ABI-verified development artifact.
+- State ownership: `CameraSessionController` remains the sole engine/generation authority;
+  `CameraStateMutationGate` serializes short non-suspending mutations; `CameraAsyncOwnership` owns
+  current immutable intent and single-consumption permits. Native capability policy is pure.
+- Resource ownership: callback-delivered resources are resolved once by `CloseOnceCameraResource`;
+  pause/switch/shutdown detach before closing; cleanup continues outside the gate and only a current
+  cleanup permit may publish. The baseline native core owns no Camera NDK/AImage/hardware-buffer handle.
+- Error behavior: requested optional configuration rejection changes no trust and permits one new safe
+  baseline attempt; safe-baseline rejection alone is structural and permits same-canonical failover.
+  Missing/later/unimplemented optional native capability is typed unavailability, never app or route
+  failure. Model, APK, signer, ABI, ELF, or public-symbol drift fails CI closed.
+- Universality rules: branch only on Android API and probed public capabilities, never manufacturer,
+  model, SoC, sensor, camera ID, or CPU vendor. Java Camera2 remains the only control plane.
+- Performance constraints: no new startup loader/probe or Camera2 feature work; mutation blocks never
+  suspend or close resources; callback admission is constant-time; all collections/work stay bounded.
+- Tests required: API 22/23/24/26/modern capability matrix; requested/baseline policy and transition
+  matrix; A/B/C callback permutations, surface replacement, pause/shutdown, stale cleanup, duplicate
+  first frame/resource, exactly-once close; API-neutral native-owner lifecycle; OTA floor/signer
+  rejection; lint; all-ABI ELF dependency/undefined-symbol/export checks.
+- CI requirements: model minSdk assertion before compilation; JVM/native tests and `lintDevOta`; one
+  all-ABI assembly; produced APK exact minSdk 23, v1+v2 signer, size/alignment, ABI/ELF/API-symbol guard;
+  packaging/publisher exact-floor/hash/source checks before upload or publication.
+- Hardware acceptance: GitHub API-23 emulator install/start/native-load smoke before an API-23 launch
+  claim; modern-API load smoke; no physical lens/FPS/RAW/lifecycle/leak claim without the separate
+  `HARDWARE_ACCEPTANCE.md` matrix.
+
 ## CAMX-101 — Atomic two-tier cache persistence
 
 - Tier: A.

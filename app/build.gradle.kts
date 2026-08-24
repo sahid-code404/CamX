@@ -8,6 +8,7 @@ plugins {
 }
 
 val maximumAndroidVersionCode = 2_100_000_000
+val camxApplicationBaselineApi = 23
 val rawCiRunNumber = providers.environmentVariable("GITHUB_RUN_NUMBER").orNull
 val ciRunNumber = rawCiRunNumber?.let { raw ->
     require(raw.all(Char::isDigit)) { "GITHUB_RUN_NUMBER must be a non-negative integer" }
@@ -63,7 +64,7 @@ android {
 
     defaultConfig {
         applicationId = "com.sahidcode404.camx"
-        minSdk = 29
+        minSdk = camxApplicationBaselineApi
         targetSdk = 37
         versionCode = devOtaVersionCode ?: (10_000 + ciRunNumber)
         versionName = devOtaVersionName
@@ -96,6 +97,8 @@ android {
             storePassword = "camx-dev-only-2026"
             keyAlias = "camx-dev"
             keyPassword = "camx-dev-only-2026"
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
@@ -138,6 +141,26 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    }
+}
+
+androidComponents {
+    beforeVariants(selector().all()) { variant ->
+        check(variant.minSdk == 23) {
+            "CamX application support must remain at Android API 23; " +
+                "${variant.name} resolves minSdk ${variant.minSdk}"
+        }
+    }
+}
+
+tasks.register("verifyApi23Baseline") {
+    group = "verification"
+    description = "Verifies the Tier-A Android API-23 application baseline from the Android model."
+    doLast {
+        check(android.defaultConfig.minSdk == 23) {
+            "CamX application baseline changed from Android API 23"
+        }
+        println("CamX Android model baseline verified: minSdk=23")
     }
 }
 

@@ -27,6 +27,11 @@ data class PreviewFpsResolution(
     val reason: PreviewFpsFallbackReason,
 )
 
+enum class PreviewConfigurationAttemptKind {
+    REQUESTED,
+    SAFE_BASELINE,
+}
+
 data class PreviewConfiguration(
     val streamType: PreviewStreamType,
     val size: IntSize,

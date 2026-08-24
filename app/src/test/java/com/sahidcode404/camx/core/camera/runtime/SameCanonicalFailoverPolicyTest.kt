@@ -2,7 +2,7 @@ package com.sahidcode404.camx.core.camera.runtime
 
 import com.sahidcode404.camx.core.camera.diagnostics.MediaStoreFailure
 import com.sahidcode404.camx.core.camera.diagnostics.RawSessionRejected
-import com.sahidcode404.camx.core.camera.diagnostics.SessionConfigurationRejected
+import com.sahidcode404.camx.core.camera.diagnostics.SafeBaselineConfigurationRejected
 import com.sahidcode404.camx.core.camera.model.CameraCapabilities
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraProfile
@@ -46,7 +46,7 @@ class SameCanonicalFailoverPolicyTest {
             selected,
             active.fingerprint,
             setOf(active.fingerprint),
-            SessionConfigurationRejected,
+            SafeBaselineConfigurationRejected,
         )
         assertEquals(sibling.fingerprint, result?.fingerprint)
     }
@@ -72,7 +72,7 @@ class SameCanonicalFailoverPolicyTest {
                 selected,
                 active.fingerprint,
                 setOf(sibling.fingerprint),
-                SessionConfigurationRejected,
+                SafeBaselineConfigurationRejected,
             ),
         )
     }
@@ -85,7 +85,7 @@ class SameCanonicalFailoverPolicyTest {
                 selected,
                 other.fingerprint,
                 emptySet(),
-                SessionConfigurationRejected,
+                SafeBaselineConfigurationRejected,
             ),
         )
     }
@@ -101,7 +101,7 @@ class SameCanonicalFailoverPolicyTest {
                 selected,
                 active.fingerprint,
                 setOf(active.fingerprint),
-                SessionConfigurationRejected,
+                SafeBaselineConfigurationRejected,
             ),
         )
     }

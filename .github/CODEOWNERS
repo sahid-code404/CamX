@@ -4,8 +4,8 @@
 /app/src/main/java/com/sahidcode404/camx/core/camera/cache/ @sahid-code404
 /app/src/main/java/com/sahidcode404/camx/core/camera/raw/ @sahid-code404
 /app/src/main/java/com/sahidcode404/camx/core/update/verification/ @sahid-code404
-/native/core/include/ @sahid-code404
-/native/core/src/jni/ @sahid-code404
+/native/core/ @sahid-code404
+/docs/ @sahid-code404
 /scripts/verify-*.sh @sahid-code404
 /tools/dev-signing/ @sahid-code404
 /.github/workflows/ @sahid-code404

@@ -29,6 +29,7 @@ object DevOtaTrust {
     const val CHANNEL = "development"
     const val APPLICATION_ID = "com.sahidcode404.camx"
     const val APK_ASSET_NAME = "CamX-dev.apk"
+    const val APPLICATION_MIN_SDK = 23
     const val VERIFIED_UPDATE_RELATIVE_DIRECTORY = "updates/verified"
     const val CERT_SHA256 = "f6b8a3f492d4fb9d2dbf58937d3995f8f1e0f79433c4f3e25b9930218e694d8c"
     const val MAX_APK_BYTES = 256L * 1024L * 1024L
@@ -49,6 +50,9 @@ object DevelopmentUpdateVerifier {
             downloaded.applicationId != DevOtaTrust.APPLICATION_ID
         ) return reject(UpdateFailureCode.PACKAGE_MISMATCH)
         if (manifest.versionCode <= installed.versionCode) return reject(UpdateFailureCode.NOT_AN_UPGRADE)
+        if (manifest.minSdk != DevOtaTrust.APPLICATION_MIN_SDK) {
+            return reject(UpdateFailureCode.MIN_SDK_UNSUPPORTED)
+        }
         if (manifest.minSdk > installed.sdkInt || downloaded.minSdk > installed.sdkInt) {
             return reject(UpdateFailureCode.MIN_SDK_UNSUPPORTED)
         }

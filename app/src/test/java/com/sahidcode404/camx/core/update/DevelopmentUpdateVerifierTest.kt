@@ -25,7 +25,7 @@ class DevelopmentUpdateVerifierTest {
             applicationId = DevOtaTrust.APPLICATION_ID,
             versionCode = 11L,
             versionName = "0.1.0-dev.11",
-            minSdk = 29,
+            minSdk = DevOtaTrust.APPLICATION_MIN_SDK,
             sha256 = digest,
             signingCertSha256 = DevOtaTrust.CERT_SHA256,
         )
@@ -38,7 +38,7 @@ class DevelopmentUpdateVerifierTest {
             applicationId = DevOtaTrust.APPLICATION_ID,
             versionCode = 11L,
             versionName = "0.1.0-dev.11",
-            minSdk = 29,
+            minSdk = DevOtaTrust.APPLICATION_MIN_SDK,
             sha256 = digest,
             signingCertSha256 = DevOtaTrust.CERT_SHA256,
         )
@@ -57,7 +57,7 @@ class DevelopmentUpdateVerifierTest {
             applicationId = DevOtaTrust.APPLICATION_ID,
             versionCode = 11L,
             versionName = "0.1.0-dev.11",
-            minSdk = 29,
+            minSdk = DevOtaTrust.APPLICATION_MIN_SDK,
             sha256 = digest,
             signingCertSha256 = "b".repeat(64),
         )
@@ -68,13 +68,35 @@ class DevelopmentUpdateVerifierTest {
         )
     }
 
+    @Test
+    fun rejectsDevelopmentArtifactThatRaisesApplicationBaseline() {
+        val downloaded = DownloadedApkIdentity(
+            applicationId = DevOtaTrust.APPLICATION_ID,
+            versionCode = 11L,
+            versionName = "0.1.0-dev.11",
+            minSdk = 24,
+            sha256 = digest,
+            signingCertSha256 = DevOtaTrust.CERT_SHA256,
+        )
+        val result = DevelopmentUpdateVerifier.verify(
+            manifest().copy(minSdk = 24),
+            installed,
+            downloaded,
+        )
+
+        assertEquals(
+            UpdateFailureCode.MIN_SDK_UNSUPPORTED,
+            (result as UpdateVerification.Rejected).code,
+        )
+    }
+
     private fun manifest() = DevOtaManifest(
         schema = DevOtaTrust.SCHEMA,
         channel = DevOtaTrust.CHANNEL,
         applicationId = DevOtaTrust.APPLICATION_ID,
         versionCode = 11L,
         versionName = "0.1.0-dev.11",
-        minSdk = 29,
+        minSdk = DevOtaTrust.APPLICATION_MIN_SDK,
         apkAssetName = DevOtaTrust.APK_ASSET_NAME,
         sha256 = digest,
         signingCertSha256 = DevOtaTrust.CERT_SHA256,

@@ -1,8 +1,10 @@
 package com.sahidcode404.camx.core.update.verification
 
 import android.content.Context
-import android.os.Build
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.Signature
+import android.os.Build
 import java.io.File
 import java.security.MessageDigest
 
@@ -14,13 +16,13 @@ class AndroidApkInspector(private val context: Context) {
         @Suppress("DEPRECATION")
         val info = context.packageManager.getPackageInfo(
             context.packageName,
-            PackageManager.GET_SIGNING_CERTIFICATES,
+            signingCertificateFlags(),
         )
-        val signers = checkNotNull(info.signingInfo).apkContentsSigners
+        val signers = currentSigners(info)
         check(signers.size == 1) { "Installed development app must have exactly one current signer" }
         return InstalledAppIdentity(
             applicationId = info.packageName,
-            versionCode = info.longVersionCode,
+            versionCode = versionCode(info),
             signingCertSha256 = sha256Hex(signers.single().toByteArray().inputStream()),
             sdkInt = Build.VERSION.SDK_INT,
         )
@@ -33,22 +35,54 @@ class AndroidApkInspector(private val context: Context) {
         val info = checkNotNull(
             context.packageManager.getPackageArchiveInfo(
                 apk.path,
-                PackageManager.GET_SIGNING_CERTIFICATES,
+                signingCertificateFlags(),
             ),
         ) {
             "Android could not inspect the downloaded APK"
         }
-        val signers = checkNotNull(info.signingInfo).apkContentsSigners
+        val signers = currentSigners(info)
         check(signers.size == 1) { "Development APK must have exactly one current signer" }
         return DownloadedApkIdentity(
             applicationId = info.packageName,
-            versionCode = info.longVersionCode,
+            versionCode = versionCode(info),
             versionName = checkNotNull(info.versionName) { "APK version name is missing" },
-            minSdk = checkNotNull(info.applicationInfo) { "APK application metadata is missing" }
-                .minSdkVersion,
+            minSdk = declaredMinSdk(info),
             sha256 = apk.inputStream().use(::sha256Hex),
             signingCertSha256 = sha256Hex(signers.single().toByteArray().inputStream()),
         )
+    }
+
+    @Suppress("DEPRECATION", "InlinedApi")
+    private fun signingCertificateFlags(): Int = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        PackageManager.GET_SIGNING_CERTIFICATES
+    } else {
+        PackageManager.GET_SIGNATURES
+    }
+
+    @Suppress("DEPRECATION")
+    private fun currentSigners(info: PackageInfo): Array<Signature> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            checkNotNull(info.signingInfo) { "APK signing metadata is missing" }.apkContentsSigners
+        } else {
+            checkNotNull(info.signatures) { "APK signing metadata is missing" }
+        }
+
+    @Suppress("DEPRECATION")
+    private fun versionCode(info: PackageInfo): Long = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        info.longVersionCode
+    } else {
+        info.versionCode.toLong()
+    }
+
+    private fun declaredMinSdk(info: PackageInfo): Int {
+        val applicationInfo = checkNotNull(info.applicationInfo) { "APK application metadata is missing" }
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            applicationInfo.minSdkVersion
+        } else {
+            // API 23 does not expose ApplicationInfo.minSdkVersion. The fixed development channel
+            // accepts only API-23 artifacts, and PackageManager must still parse the candidate APK.
+            DevOtaTrust.APPLICATION_MIN_SDK
+        }
     }
 
     private fun sha256Hex(input: java.io.InputStream): String {

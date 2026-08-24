@@ -2,11 +2,14 @@ package com.sahidcode404.camx.core.camera.session
 
 import com.sahidcode404.camx.core.camera.diagnostics.MediaStoreFailure
 import com.sahidcode404.camx.core.camera.diagnostics.RawSessionRejected
+import com.sahidcode404.camx.core.camera.diagnostics.RequestedConfigurationKind
+import com.sahidcode404.camx.core.camera.diagnostics.RequestedConfigurationRejected
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
 import com.sahidcode404.camx.core.camera.model.CameraProfileFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraRouteId
 import com.sahidcode404.camx.core.camera.model.CanonicalLensFingerprint
 import com.sahidcode404.camx.core.camera.model.CaptureToken
+import com.sahidcode404.camx.core.camera.model.PreviewConfigurationAttemptKind
 import com.sahidcode404.camx.core.camera.model.SelectionGeneration
 import com.sahidcode404.camx.core.camera.model.SessionGeneration
 import org.junit.Assert.assertThrows
@@ -60,6 +63,76 @@ class CameraStateTransitionsTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             CameraEngineState.RecoverableError(selection("a"), RawSessionRejected)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CameraEngineState.RecoverableError(
+                selection("a"),
+                RequestedConfigurationRejected(RequestedConfigurationKind.FPS),
+            )
+        }
+    }
+
+    @Test
+    fun requestedPreviewConfigurationMayFallbackOnceWithFreshSessionGeneration() {
+        val requestedSelection = selection("a")
+        val baselineSelection = requestedSelection.copy(
+            sessionGeneration = SessionGeneration(2L),
+        )
+
+        CameraStateTransitions.requireAllowed(
+            CameraEngineState.ConfiguringPreview(
+                requestedSelection,
+                PreviewConfigurationAttemptKind.REQUESTED,
+            ),
+            CameraEngineState.ConfiguringPreview(
+                baselineSelection,
+                PreviewConfigurationAttemptKind.SAFE_BASELINE,
+            ),
+        )
+    }
+
+    @Test
+    fun previewConfigurationSelfEdgesRejectEveryNonFallbackDirection() {
+        val first = selection("a")
+        val nextSession = first.copy(sessionGeneration = SessionGeneration(2L))
+        val requested = CameraEngineState.ConfiguringPreview(
+            first,
+            PreviewConfigurationAttemptKind.REQUESTED,
+        )
+        val baseline = CameraEngineState.ConfiguringPreview(
+            first,
+            PreviewConfigurationAttemptKind.SAFE_BASELINE,
+        )
+        val forbiddenDestinations = listOf(
+            CameraEngineState.ConfiguringPreview(
+                nextSession,
+                PreviewConfigurationAttemptKind.REQUESTED,
+            ),
+            CameraEngineState.ConfiguringPreview(
+                first,
+                PreviewConfigurationAttemptKind.SAFE_BASELINE,
+            ),
+            CameraEngineState.ConfiguringPreview(
+                selection("b").copy(sessionGeneration = SessionGeneration(2L)),
+                PreviewConfigurationAttemptKind.SAFE_BASELINE,
+            ),
+        )
+
+        forbiddenDestinations.forEach { destination ->
+            assertThrows(IllegalArgumentException::class.java) {
+                CameraStateTransitions.requireAllowed(requested, destination)
+            }
+        }
+        listOf(
+            PreviewConfigurationAttemptKind.REQUESTED,
+            PreviewConfigurationAttemptKind.SAFE_BASELINE,
+        ).forEach { destinationAttempt ->
+            assertThrows(IllegalArgumentException::class.java) {
+                CameraStateTransitions.requireAllowed(
+                    baseline,
+                    CameraEngineState.ConfiguringPreview(nextSession, destinationAttempt),
+                )
+            }
         }
     }
 

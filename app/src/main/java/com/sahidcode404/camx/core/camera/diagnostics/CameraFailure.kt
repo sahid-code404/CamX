@@ -24,10 +24,29 @@ data class CameraFailurePolicy(
     val category: CameraFailureCategory,
     val structural: Boolean,
     val trustChange: TrustChange,
+    val fallbackPermitted: Boolean,
     val automaticRetryPermitted: Boolean,
     val sameCanonicalFailoverPermitted: Boolean,
     val userActionRequired: Boolean,
-)
+) {
+    init {
+        require(!sameCanonicalFailoverPermitted || structural) {
+            "Same-canonical failover requires a structural failure"
+        }
+        require(
+            trustChange !in setOf(
+                TrustChange.REJECT_PREVIEW_PROFILE,
+                TrustChange.REJECT_RAW_PROFILE,
+            ) || structural,
+        ) { "Permanent trust rejection requires a structural failure" }
+        require(!structural || !automaticRetryPermitted) {
+            "A structural failure cannot blindly retry the same configuration"
+        }
+        require(!fallbackPermitted || (!structural && trustChange == TrustChange.NONE)) {
+            "Configuration fallback cannot mutate persistent camera trust"
+        }
+    }
+}
 
 sealed interface CameraFailure {
     val policy: CameraFailurePolicy
@@ -79,21 +98,28 @@ data object SurfaceUnavailable : CameraFailure {
     override val policy = policy(category = CameraFailureCategory.SURFACE, retry = true)
 }
 
-data object SessionConfigurationRejected : CameraFailure {
-    override val policy = structuralPreviewFailure(CameraFailureCategory.SESSION)
+enum class RequestedConfigurationKind(val category: CameraFailureCategory) {
+    FPS(CameraFailureCategory.PREVIEW),
+    EXACT_FPS_RANGE(CameraFailureCategory.PREVIEW),
+    HIGH_RESOLUTION_PREVIEW(CameraFailureCategory.PREVIEW),
+    OPTIONAL_YUV_OUTPUT(CameraFailureCategory.SESSION),
+    OPTIONAL_ANALYSIS_OUTPUT(CameraFailureCategory.SESSION),
+    OPTIONAL_AUXILIARY_STREAM(CameraFailureCategory.SESSION),
+    ASPECT_PREFERENCE(CameraFailureCategory.PREVIEW),
+    ENHANCEMENT(CameraFailureCategory.SESSION),
 }
 
-data object UnsupportedStreamCombination : CameraFailure {
-    override val policy = structuralPreviewFailure(CameraFailureCategory.SESSION)
-}
-
-data object FpsRangeRejected : CameraFailure {
+data class RequestedConfigurationRejected(
+    val requested: RequestedConfigurationKind,
+) : CameraFailure {
     override val policy = policy(
-        category = CameraFailureCategory.PREVIEW,
-        structural = true,
-        retry = true,
-        userAction = true,
+        category = requested.category,
+        fallback = true,
     )
+}
+
+data object SafeBaselineConfigurationRejected : CameraFailure {
+    override val policy = structuralPreviewFailure(CameraFailureCategory.SESSION)
 }
 
 data object PreviewTimeout : CameraFailure {
@@ -144,6 +170,7 @@ private fun policy(
     category: CameraFailureCategory,
     structural: Boolean = false,
     trust: TrustChange = TrustChange.NONE,
+    fallback: Boolean = false,
     retry: Boolean = false,
     failover: Boolean = false,
     userAction: Boolean = false,
@@ -151,6 +178,7 @@ private fun policy(
     category = category,
     structural = structural,
     trustChange = trust,
+    fallbackPermitted = fallback,
     automaticRetryPermitted = retry,
     sameCanonicalFailoverPermitted = failover,
     userActionRequired = userAction,

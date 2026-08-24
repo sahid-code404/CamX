@@ -40,7 +40,7 @@ jq --exit-status '
   .applicationId == "com.sahidcode404.camx" and
   (.versionCode | type == "number" and . >= 1 and . <= 2100000000 and . == floor) and
   (.versionName | type == "string" and length >= 1 and length <= 128) and
-  (.minSdk | type == "number" and . >= 1 and . == floor) and
+  .minSdk == 23 and
   .apkAssetName == "CamX-dev.apk" and
   (.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
   (.signingCertSha256 | type == "string" and test("^[0-9a-f]{64}$")) and
@@ -60,6 +60,10 @@ readonly manifest_sha actual_sha manifest_signer signer_output signer_count actu
 
 test "$manifest_sha" = "$actual_sha" || { echo 'Packaged APK SHA does not match manifest.' >&2; exit 1; }
 test "$signer_count" = 1 || { echo "Expected exactly one APK signer, found: $signer_count" >&2; exit 1; }
+printf '%s\n' "$signer_output" | grep -Fqx 'Verified using v1 scheme (JAR signing): true' || {
+  echo 'APK Signature Scheme v1 is required for Android API 23.' >&2
+  exit 1
+}
 printf '%s\n' "$signer_output" | grep -Fqx 'Verified using v2 scheme (APK Signature Scheme v2): true' || {
   echo 'APK Signature Scheme v2 verification is required.' >&2
   exit 1
@@ -80,6 +84,7 @@ test "$package_name" = 'com.sahidcode404.camx' || { echo 'APK package is not the
 test "$package_name" = "$(jq -er '.applicationId' "$manifest")" || { echo 'Package mismatch.' >&2; exit 1; }
 test "$version_code" = "$(jq -er '.versionCode | tostring' "$manifest")" || { echo 'versionCode mismatch.' >&2; exit 1; }
 test "$version_name" = "$(jq -er '.versionName' "$manifest")" || { echo 'versionName mismatch.' >&2; exit 1; }
+test "$min_sdk" = 23 || { echo "APK minSdk must remain 23, got: $min_sdk" >&2; exit 1; }
 test "$min_sdk" = "$(jq -er '.minSdk | tostring' "$manifest")" || { echo 'minSdk mismatch.' >&2; exit 1; }
 
 archive_entries="$(unzip -Z1 "$apk")"

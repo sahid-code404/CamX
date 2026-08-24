@@ -2,11 +2,28 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
+#include "camx/android_owners.hpp"
 #include "camx/bounded_timestamp_index.hpp"
 #include "camx/native_trace_buffer.hpp"
 #include "camx/native_buffer_pool.hpp"
 #include "camx/resource_counters.hpp"
+
+namespace {
+
+struct TestHandle final {
+  int* releases;
+};
+
+void ReleaseTestHandle(TestHandle* handle) noexcept {
+  ++(*handle->releases);
+  delete handle;
+}
+
+using TestOwner = camx::UniqueNdkOwner<TestHandle, ReleaseTestHandle>;
+
+}  // namespace
 
 int main() {
   camx::BoundedTimestampIndex<int> index(2U);
@@ -52,5 +69,21 @@ int main() {
   assert(!pool.acquire().has_value());
   first_buffer.reset();
   assert(pool.acquire().has_value());
+
+  int releases = 0;
+  {
+    TestOwner first(new TestHandle{.releases = &releases});
+    TestOwner moved(std::move(first));
+    assert(!first);
+    assert(moved);
+    moved.reset(new TestHandle{.releases = &releases});
+    assert(releases == 1);
+    TestHandle* released = moved.release();
+    assert(!moved);
+    assert(releases == 1);
+    ReleaseTestHandle(released);
+    assert(releases == 2);
+  }
+  assert(releases == 2);
   return 0;
 }

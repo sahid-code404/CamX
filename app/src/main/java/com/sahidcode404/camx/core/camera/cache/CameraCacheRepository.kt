@@ -39,7 +39,7 @@ class CameraCacheRepository(private val persistence: CameraCachePersistence) {
 
     suspend fun loadHot(environment: CameraEnvironmentFingerprint): CacheRead<HotStartSnapshot> {
         val request = beginRequest(hotRequestSequence) {
-            hotMemory.updateAndGet { current -> current?.takeIf { it.environment == environment } }
+            hotMemory.updateAndGetApi23 { current -> current?.takeIf { it.environment == environment } }
         }
         return hotMutationMutex.withLock {
             if (!isCurrent(hotRequestSequence, request)) return@withLock CacheRead.Stale
@@ -71,7 +71,9 @@ class CameraCacheRepository(private val persistence: CameraCachePersistence) {
         environment: CameraEnvironmentFingerprint,
     ): CacheRead<CameraTopologySnapshot> {
         val request = beginRequest(topologyRequestSequence) {
-            topologyMemory.updateAndGet { current -> current?.takeIf { it.environment == environment } }
+            topologyMemory.updateAndGetApi23 { current ->
+                current?.takeIf { it.environment == environment }
+            }
         }
         return topologyMutationMutex.withLock {
             if (!isCurrent(topologyRequestSequence, request)) return@withLock CacheRead.Stale
@@ -117,7 +119,7 @@ class CameraCacheRepository(private val persistence: CameraCachePersistence) {
             "Cannot persist an unsupported topology-cache schema"
         }
         val request = beginRequest(topologyRequestSequence) {
-            topologyMemory.updateAndGet { current ->
+            topologyMemory.updateAndGetApi23 { current ->
                 current?.takeIf { it.environment == snapshot.environment }
             }
         }
@@ -144,4 +146,12 @@ class CameraCacheRepository(private val persistence: CameraCachePersistence) {
 
     private fun isCurrent(sequence: AtomicLong, request: Long): Boolean =
         synchronized(sequence) { sequence.get() == request }
+}
+
+private inline fun <T> AtomicReference<T>.updateAndGetApi23(transform: (T) -> T): T {
+    while (true) {
+        val current = get()
+        val updated = transform(current)
+        if (compareAndSet(current, updated)) return updated
+    }
 }

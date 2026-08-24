@@ -2,10 +2,17 @@
 
 #include <type_traits>
 
-static_assert(!std::is_copy_constructible_v<camx::CameraManagerOwner>);
-static_assert(std::is_move_constructible_v<camx::CameraManagerOwner>);
-static_assert(!std::is_copy_constructible_v<camx::CameraMetadataOwner>);
-static_assert(!std::is_copy_constructible_v<camx::NativeImageOwner>);
-static_assert(!std::is_copy_constructible_v<camx::NativeImageReaderOwner>);
-static_assert(!std::is_copy_constructible_v<camx::HardwareBufferOwner>);
-static_assert(!std::is_copy_constructible_v<camx::CameraIdListOwner>);
+namespace {
+
+struct CompileOnlyHandle final {};
+
+void ReleaseCompileOnlyHandle(CompileOnlyHandle* handle) noexcept { delete handle; }
+
+using CompileOnlyOwner = camx::UniqueNdkOwner<CompileOnlyHandle, ReleaseCompileOnlyHandle>;
+
+static_assert(!std::is_copy_constructible_v<CompileOnlyOwner>);
+static_assert(!std::is_copy_assignable_v<CompileOnlyOwner>);
+static_assert(std::is_nothrow_move_constructible_v<CompileOnlyOwner>);
+static_assert(std::is_nothrow_move_assignable_v<CompileOnlyOwner>);
+
+}  // namespace

@@ -55,8 +55,12 @@ test "$application_id" = 'com.sahidcode404.camx' || { echo "Wrong package: $appl
   exit 1
 }
 test -n "$version_name" && ((${#version_name} <= 128)) || { echo 'Invalid APK versionName.' >&2; exit 1; }
-[[ "$min_sdk" =~ ^[0-9]+$ ]] && ((min_sdk >= 1)) || { echo "Invalid APK minSdk: $min_sdk" >&2; exit 1; }
+test "$min_sdk" = 23 || { echo "CamX development APK must declare minSdk 23, got: $min_sdk" >&2; exit 1; }
 test "$signer_count" = 1 || { echo "Expected exactly one APK signer, found: $signer_count" >&2; exit 1; }
+printf '%s\n' "$signer_output" | grep -Fqx 'Verified using v1 scheme (JAR signing): true' || {
+  echo 'APK Signature Scheme v1 is required for Android API 23.' >&2
+  exit 1
+}
 printf '%s\n' "$signer_output" | grep -Fqx 'Verified using v2 scheme (APK Signature Scheme v2): true' || {
   echo 'APK Signature Scheme v2 verification is required.' >&2
   exit 1

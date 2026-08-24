@@ -1,15 +1,16 @@
 #pragma once
 
-#include <android/hardware_buffer.h>
-#include <camera/NdkCameraManager.h>
-#include <camera/NdkCameraMetadata.h>
-#include <media/NdkImage.h>
-#include <media/NdkImageReader.h>
-
 #include <utility>
 
 namespace camx {
 
+/**
+ * API-neutral move-only owner used by optional public-NDK capability modules.
+ *
+ * The API-23 baseline deliberately does not include or bind Camera NDK,
+ * AImageReader, AImage, or AHardwareBuffer symbols. A future optional target
+ * may instantiate this owner only at that target's capability-gated API level.
+ */
 template <typename Handle, auto Release>
 class UniqueNdkOwner final {
  public:
@@ -44,43 +45,6 @@ class UniqueNdkOwner final {
 
  private:
   Handle* handle_ = nullptr;
-};
-
-using CameraManagerOwner = UniqueNdkOwner<ACameraManager, ACameraManager_delete>;
-using CameraMetadataOwner = UniqueNdkOwner<ACameraMetadata, ACameraMetadata_free>;
-using NativeImageOwner = UniqueNdkOwner<AImage, AImage_delete>;
-using NativeImageReaderOwner = UniqueNdkOwner<AImageReader, AImageReader_delete>;
-using HardwareBufferOwner = UniqueNdkOwner<AHardwareBuffer, AHardwareBuffer_release>;
-
-class CameraIdListOwner final {
- public:
-  CameraIdListOwner() noexcept = default;
-  explicit CameraIdListOwner(ACameraIdList* list) noexcept : list_(list) {}
-  ~CameraIdListOwner() { reset(); }
-
-  CameraIdListOwner(const CameraIdListOwner&) = delete;
-  CameraIdListOwner& operator=(const CameraIdListOwner&) = delete;
-
-  CameraIdListOwner(CameraIdListOwner&& other) noexcept
-      : list_(std::exchange(other.list_, nullptr)) {}
-  CameraIdListOwner& operator=(CameraIdListOwner&& other) noexcept {
-    if (this != &other) {
-      reset(std::exchange(other.list_, nullptr));
-    }
-    return *this;
-  }
-
-  [[nodiscard]] ACameraIdList* get() const noexcept { return list_; }
-
-  void reset(ACameraIdList* replacement = nullptr) noexcept {
-    if (list_ != nullptr) {
-      ACameraManager_deleteCameraIdList(list_);
-    }
-    list_ = replacement;
-  }
-
- private:
-  ACameraIdList* list_ = nullptr;
 };
 
 }  // namespace camx

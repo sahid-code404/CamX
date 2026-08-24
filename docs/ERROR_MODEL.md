@@ -1,34 +1,47 @@
 # Error Model
 
-Every `CameraFailure` has a category, permanence, trust effect, retry permission, same-canonical
-failover permission, and user-action requirement. Error text is presentation data and never drives
-policy.
+Every `CameraFailure` has a category, structural flag, trust effect, one-shot configuration-fallback
+permission, generic retry permission, same-canonical failover permission, and user-action requirement.
+Error text is presentation data and never drives policy.
 
-| Failure | Category | Structural? | Trust effect | Auto retry | Same-canonical failover | User action |
-|---|---|---:|---|---:|---:|---|
-| `PermissionDenied` | permission | no | none | no | no | grant permission/settings if permanently denied |
-| `CameraInUse` | availability | no | temporarily unavailable | bounded | no | close competing app if persistent |
-| `MaximumCamerasInUse` | availability | no | temporarily unavailable | bounded | no | optional |
-| `CameraDisabled` | policy | no | temporarily unavailable | no | no | device/admin policy |
-| `CameraDisconnected` | device | no | temporarily unavailable | bounded | no | none |
-| `CameraDeviceError` | device | depends on platform reason | temporary by default | bounded | only if classified structural | optional |
-| `OpenTimeout` | timing | no | temporary | bounded | no | none |
-| `SurfaceUnavailable` | surface | no | none | when surface returns | no | none |
-| `SessionConfigurationRejected` | profile/session | yes | preview structurally rejected | no | yes | none |
-| `UnsupportedStreamCombination` | profile/session | yes | preview or RAW structural | no | yes | none |
-| `FpsRangeRejected` | preview policy | yes for configuration, not lens | config evidence only | retry without override | no | adjust setting |
-| `PreviewTimeout` | timing | no by default | temporary | bounded | no | none |
-| `RawUnsupported` | RAW | yes | RAW rejected only | no | yes | none |
-| `RawSessionRejected` | RAW | yes | RAW rejected only | no | yes | none |
-| `RawCaptureTimeout` | RAW timing | no | temporary RAW | bounded | no | none |
-| `RawPairTimeout` | RAW pairing | no | none | bounded | no | none |
-| `DngWriteFailure` | encoding/storage | no | none | no | no | retry/save diagnostics |
-| `MediaStoreFailure` | storage | no | none | no | no | free storage/permission |
-| `StaleSelection` | concurrency | no | none | no | no | none |
-| `StaleSession` | concurrency | no | none | no | no | none |
-| `StaleCapture` | concurrency | no | none | no | no | none |
-| `Cancelled` | control | no | none | no | no | none |
+| Failure | Category | Structural? | Trust effect | Config fallback | Generic retry | Same-canonical failover | User action |
+|---|---|---:|---|---:|---:|---:|---|
+| `PermissionDenied` | permission | no | none | no | no | no | settings only if permanently denied |
+| `CameraInUse` / `MaximumCamerasInUse` | availability | no | temporarily unavailable | no | bounded | no | optional |
+| `CameraDisabled` | availability | no | temporarily unavailable | no | no | no | device/admin policy |
+| `CameraDisconnected` | device | no | temporarily unavailable | no | bounded | no | none |
+| `CameraDeviceError` | device | explicit classification | temporary or reject preview profile | no | only if nonstructural | only if structural | optional |
+| `OpenTimeout` | device | no | temporarily unavailable | no | bounded | no | none |
+| `SurfaceUnavailable` | surface | no | none | no | when surface returns | no | none |
+| `RequestedConfigurationRejected(kind)` | preview/session | no | none | exactly one safe-baseline attempt | no | no | none |
+| `SafeBaselineConfigurationRejected` | session | yes | reject preview profile | no | no | yes | none |
+| `PreviewTimeout` | preview | no | temporarily unavailable | no | bounded | no | none |
+| `RawUnsupported` / `RawSessionRejected` | RAW | yes | reject RAW profile only | no | no | yes | none |
+| `RawCaptureTimeout` | RAW | no | none | no | bounded | no | none |
+| `RawPairTimeout` | RAW | no | none | no | bounded | no | none |
+| `DngWriteFailure` | storage | no | none | no | no | no | retry/save diagnostics |
+| `MediaStoreFailure` | storage | no | none | no | no | no | free storage/permission |
+| `StaleSelection` / `StaleSession` / `StaleCapture` | concurrency | no | none | no | no | no | none |
+| `Cancelled` | control | no | none | no | no | no | none |
 
 Classification is centralized and exhaustive. A transient error is never persisted as permanent
 rejection. An output error is never converted to a camera-route error. Retry budgets are bounded and
 reset only by explicit success or lifecycle policy; they are not loops hidden inside callbacks.
+
+## Requested configuration versus safe baseline
+
+`RequestedConfigurationRejected` covers optional FPS, exact range, high-resolution preview, optional
+YUV/analysis/auxiliary streams, aspect preference, and enhancement requests. It is evidence only about
+that requested combination. It never enters an error state, mutates `PreviewTrust`, enables generic
+automatic retry, or enables profile failover. The owner may issue exactly one new
+`SAFE_BASELINE` attempt with optional outputs and overrides removed, after strictly advancing the
+session generation and replacing the configuration permit.
+
+`SafeBaselineConfigurationRejected` can be created only for a consumed permit that the owner itself
+issued as `SAFE_BASELINE`. It is structural profile evidence, enters `StructuralError`, rejects preview
+trust for that profile, and may invoke same-canonical failover. A platform callback or caller cannot
+relabel an arbitrary request as the baseline.
+
+`CameraFailurePolicy` enforces that failover and permanent trust rejection imply structural failure,
+structural failure cannot generically retry, and configuration fallback is nonstructural with no trust
+change. These are construction invariants, not review conventions.

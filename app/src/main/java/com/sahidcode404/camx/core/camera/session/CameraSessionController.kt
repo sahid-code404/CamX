@@ -14,8 +14,6 @@ import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -24,10 +22,11 @@ import kotlinx.coroutines.withContext
  * other path receives that authority.
  */
 class CameraSessionController {
-    private val operationMutex = Mutex()
     private val callbackThread = HandlerThread("camx-camera-control").apply { start() }
     private val callbackDispatcher: CoroutineDispatcher = Handler(callbackThread.looper)
         .asCoroutineDispatcher("camx-camera-control")
+    private val mutationGate = CameraStateMutationGate(callbackDispatcher)
+    private val asyncOwnership = CameraAsyncOwnership()
     private val generations = CameraGenerationGate()
     private val shutdownRequested = AtomicBoolean(false)
     private val shutdownComplete = CompletableDeferred<Unit>()
@@ -39,27 +38,37 @@ class CameraSessionController {
     val state: StateFlow<CameraEngineState> = mutableState.asStateFlow()
     val resources: StateFlow<CameraResourceSnapshot> = mutableResources.asStateFlow()
 
-    suspend fun select(selection: ActiveCameraSelection) = serialized {
-        val current = mutableState.value
-        val currentRoute = current.selectionOrNull()?.routeId
-        CameraStateTransitions.requirePhaseAllowed(current, CameraEnginePhase.SWITCHING)
-        val nextGenerations = generations.advanceSelection()
-        val effectiveSelection = selection.copy(
-            selectionGeneration = nextGenerations.selection,
-            sessionGeneration = nextGenerations.session,
-        )
-        transition(CameraEngineState.Switching(from = currentRoute, to = effectiveSelection))
-        transition(CameraEngineState.WaitingForSurface(selection = effectiveSelection))
+    suspend fun select(selection: ActiveCameraSelection) {
+        check(!shutdownRequested.get()) { "CameraSessionController is shut down" }
+        mutationGate.mutate {
+            check(!shutdownRequested.get()) { "CameraSessionController is shut down" }
+            val current = mutableState.value
+            val currentRoute = current.selectionOrNull()?.routeId
+            CameraStateTransitions.requirePhaseAllowed(current, CameraEnginePhase.SWITCHING)
+            val nextGenerations = generations.advanceSelection()
+            asyncOwnership.invalidatePending()
+            val effectiveSelection = selection.copy(
+                selectionGeneration = nextGenerations.selection,
+                sessionGeneration = nextGenerations.session,
+            )
+            transition(CameraEngineState.Switching(from = currentRoute, to = effectiveSelection))
+            transition(CameraEngineState.WaitingForSurface(selection = effectiveSelection))
+        }
     }
 
-    suspend fun pause() = serialized {
-        if (mutableState.value == CameraEngineState.Closed) return@serialized
-        val nextGenerations = generations.advanceSession()
-        val selection = mutableState.value.selectionOrNull()?.copy(
-            sessionGeneration = nextGenerations.session,
-        )
-        transition(CameraEngineState.Pausing(selection))
-        transition(CameraEngineState.WaitingForSurface(selection))
+    suspend fun pause() {
+        check(!shutdownRequested.get()) { "CameraSessionController is shut down" }
+        mutationGate.mutate {
+            check(!shutdownRequested.get()) { "CameraSessionController is shut down" }
+            if (mutableState.value == CameraEngineState.Closed) return@mutate
+            val nextGenerations = generations.advanceSession()
+            asyncOwnership.invalidatePending()
+            val selection = mutableState.value.selectionOrNull()?.copy(
+                sessionGeneration = nextGenerations.session,
+            )
+            transition(CameraEngineState.Pausing(selection))
+            transition(CameraEngineState.WaitingForSurface(selection))
+        }
     }
 
     suspend fun shutdown() {
@@ -70,12 +79,11 @@ class CameraSessionController {
         var terminalFailure: Throwable? = null
         withContext(NonCancellable) {
             try {
-                withContext(callbackDispatcher) {
-                    operationMutex.withLock {
-                        generations.advanceSession()
-                        mutableState.value = CameraEngineState.Closed
-                        mutableResources.value = CameraResourceSnapshot()
-                    }
+                mutationGate.mutate {
+                    generations.advanceSession()
+                    asyncOwnership.shutdown()
+                    mutableState.value = CameraEngineState.Closed
+                    mutableResources.value = CameraResourceSnapshot()
                 }
             } catch (error: Throwable) {
                 terminalFailure = error
@@ -102,16 +110,6 @@ class CameraSessionController {
             }
         }
         terminalFailure?.let { throw it }
-    }
-
-    private suspend fun serialized(block: suspend () -> Unit) {
-        check(!shutdownRequested.get()) { "CameraSessionController is shut down" }
-        withContext(callbackDispatcher) {
-            operationMutex.withLock {
-                check(!shutdownRequested.get()) { "CameraSessionController is shut down" }
-                block()
-            }
-        }
     }
 
     private fun transition(next: CameraEngineState) {

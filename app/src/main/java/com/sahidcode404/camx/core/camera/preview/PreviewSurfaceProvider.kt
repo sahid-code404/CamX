@@ -13,12 +13,14 @@ value class PreviewSurfaceIdentity(val value: Long) {
 object PreviewSurfaceIdentityAllocator {
     private val sequence = AtomicLong(0L)
 
-    fun next(): PreviewSurfaceIdentity = PreviewSurfaceIdentity(
-        sequence.updateAndGet { current ->
+    fun next(): PreviewSurfaceIdentity {
+        while (true) {
+            val current = sequence.get()
             check(current < Long.MAX_VALUE) { "Preview surface identity exhausted" }
-            current + 1L
-        },
-    )
+            val next = current + 1L
+            if (sequence.compareAndSet(current, next)) return PreviewSurfaceIdentity(next)
+        }
+    }
 }
 
 data class PreviewSurfaceBinding(

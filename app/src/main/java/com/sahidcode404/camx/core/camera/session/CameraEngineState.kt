@@ -4,6 +4,7 @@ import com.sahidcode404.camx.core.camera.diagnostics.CameraFailure
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
 import com.sahidcode404.camx.core.camera.model.CameraRouteId
 import com.sahidcode404.camx.core.camera.model.CaptureToken
+import com.sahidcode404.camx.core.camera.model.PreviewConfigurationAttemptKind
 import com.sahidcode404.camx.core.camera.model.SessionGeneration
 
 sealed interface CameraEngineState {
@@ -22,7 +23,10 @@ sealed interface CameraEngineState {
         }
     }
 
-    data class ConfiguringPreview(val selection: ActiveCameraSelection) : CameraEngineState
+    data class ConfiguringPreview(
+        val selection: ActiveCameraSelection,
+        val attempt: PreviewConfigurationAttemptKind,
+    ) : CameraEngineState
 
     data class Previewing(val selection: ActiveCameraSelection, val firstFrameVerified: Boolean) : CameraEngineState
 
@@ -47,6 +51,9 @@ sealed interface CameraEngineState {
         init {
             require(!failure.policy.structural) {
                 "Structural camera failures cannot enter RecoverableError"
+            }
+            require(!failure.policy.fallbackPermitted) {
+                "Fallback-eligible configuration failures must proceed directly to the safe baseline"
             }
         }
     }
@@ -116,6 +123,7 @@ object CameraStateTransitions {
             CameraEnginePhase.CLOSED,
         ),
         CameraEnginePhase.CONFIGURING_PREVIEW to setOf(
+            CameraEnginePhase.CONFIGURING_PREVIEW,
             CameraEnginePhase.PREVIEWING,
             CameraEnginePhase.SWITCHING,
             CameraEnginePhase.PAUSING,
@@ -186,6 +194,19 @@ object CameraStateTransitions {
             }
         }
         when {
+            from is CameraEngineState.ConfiguringPreview &&
+                to is CameraEngineState.ConfiguringPreview -> {
+                require(
+                    from.attempt == PreviewConfigurationAttemptKind.REQUESTED &&
+                        to.attempt == PreviewConfigurationAttemptKind.SAFE_BASELINE,
+                ) { "Preview fallback must move once from requested options to the safe baseline" }
+                requireSameSelectionIntent(
+                    from.selection,
+                    to.selection,
+                    sessionContinuity = SessionContinuity.STRICTLY_ADVANCED,
+                    message = "Preview fallback changed selection intent or reused a session generation",
+                )
+            }
             to is CameraEngineState.Switching -> {
                 val activeSelection = from.selectionOrNull()
                 require(to.from == from.selectionOrNull()?.routeId) {

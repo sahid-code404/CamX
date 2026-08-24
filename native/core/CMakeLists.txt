@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(camx_core LANGUAGES CXX)
 
+if(ANDROID)
+    if(NOT "${ANDROID_PLATFORM}" STREQUAL "android-23")
+        message(FATAL_ERROR
+            "libcamx_core must compile against Android API 23 "
+            "(ANDROID_PLATFORM=${ANDROID_PLATFORM})"
+        )
+    endif()
+endif()
+
 add_library(camx_core SHARED
     src/jni/camx_jni.cpp
     src/buffer/native_buffer_pool.cpp
@@ -20,14 +29,5 @@ target_compile_options(camx_core PRIVATE
 )
 target_link_options(camx_core PRIVATE "-Wl,--exclude-libs,ALL")
 
-find_library(android_library android REQUIRED)
-find_library(camera_ndk_library camera2ndk REQUIRED)
-find_library(log_library log REQUIRED)
-find_library(media_ndk_library mediandk REQUIRED)
-
-target_link_libraries(camx_core PRIVATE
-    "${android_library}"
-    "${camera_ndk_library}"
-    "${log_library}"
-    "${media_ndk_library}"
-)
+# libcamx_core is the API-23 loadable baseline. Optional post-23 Android NDK
+# backends must be separate capability-gated targets and are not linked here.

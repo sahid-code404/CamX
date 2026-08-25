@@ -92,7 +92,10 @@ class VisiblePreviewRapidSwitchDiagnosticsTest {
     @Test
     fun `clock regression never emits a negative duration`() {
         var nowNs = 5_000_000L
-        val state = VisiblePreviewRapidSwitchState(nowNs::also) {}
+        val state = VisiblePreviewRapidSwitchState(
+            clockNanos = { nowNs },
+            sink = {},
+        )
         state.request(A, tapNs = 10_000_000L)
         assertNull(state.snapshot().tapToAcceptedMs)
 

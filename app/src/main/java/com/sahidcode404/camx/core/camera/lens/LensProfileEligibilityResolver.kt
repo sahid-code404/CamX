@@ -26,7 +26,7 @@ enum class LensProfileRejectionReason {
     STRUCTURALLY_FAILED_PROFILE,
 }
 
-sealed interface LensProfileEligibility {
+internal sealed interface LensProfileEligibility {
     val profileFingerprint: CameraProfileFingerprint
 
     data class Eligible(

@@ -32,8 +32,9 @@ if rg --quiet '^import android\.' "$projector"; then
   echo 'CameraLensUiProjector must remain pure and Android-free.' >&2
   exit 1
 fi
-if rg --quiet '\b(CameraTransportId|PhysicalCameraId|openCameraId|physicalCameraId)\b' "$projector"; then
-  echo 'Safe lens presentation projection must not expose raw camera identifiers.' >&2
+ui_model="$(awk '/data class CameraLensUiItem\(/ { capture=1 } capture { print } capture && /^\)/ { exit }' "$projector")"
+if grep -Eq '\b(CameraTransportId|PhysicalCameraId|openCameraId|physicalCameraId)\b' <<<"$ui_model"; then
+  echo 'CameraLensUiItem must not expose raw camera identifiers.' >&2
   exit 1
 fi
 

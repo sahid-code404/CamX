@@ -13,7 +13,7 @@ import java.io.InputStream
 class AtomicCameraCachePersistence internal constructor(
     private val directory: File,
     private val fileSystem: CacheFileSystem = RealCacheFileSystem,
-) : CameraCachePersistence, DeepDiscoveryKnowledgePersistence {
+) : CameraCachePersistence {
     constructor(directory: File) : this(directory, RealCacheFileSystem)
 
     override suspend fun readHot(environment: CameraEnvironmentFingerprint): CacheRead<HotStartSnapshot> =
@@ -26,7 +26,7 @@ class AtomicCameraCachePersistence internal constructor(
             TopologyCacheCodec.decode(it, environment)
         }
 
-    override suspend fun readDeepKnowledge(
+    internal suspend fun readDeepKnowledgeInternal(
         environment: CameraEnvironmentFingerprint,
     ): CacheRead<DeepDiscoveryKnowledge> =
         readBounded(deepFile, CacheBounds.DEEP_FILE_BYTES) {
@@ -39,7 +39,7 @@ class AtomicCameraCachePersistence internal constructor(
     override suspend fun writeTopology(snapshot: CameraTopologySnapshot): CacheWrite =
         encodeAndWrite(topologyFile, topologyTempFile) { TopologyCacheCodec.encode(snapshot) }
 
-    override suspend fun writeDeepKnowledge(knowledge: DeepDiscoveryKnowledge): CacheWrite =
+    internal suspend fun writeDeepKnowledgeInternal(knowledge: DeepDiscoveryKnowledge): CacheWrite =
         encodeAndWrite(deepFile, deepTempFile) { DeepDiscoveryKnowledgeCodec.encode(knowledge) }
 
     private val hotFile: File get() = File(directory, HOT_FILE_NAME)

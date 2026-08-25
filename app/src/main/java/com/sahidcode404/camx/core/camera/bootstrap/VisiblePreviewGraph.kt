@@ -4,6 +4,7 @@ import android.content.Context
 import android.hardware.camera2.CameraManager
 import android.os.Build
 import com.sahidcode404.camx.core.camera.cache.AtomicCameraCachePersistence
+import com.sahidcode404.camx.core.camera.cache.AtomicDeepDiscoveryKnowledgePersistence
 import com.sahidcode404.camx.core.camera.cache.DeepDiscoveryKnowledgeRepository
 import com.sahidcode404.camx.core.camera.discovery.AndroidAdvertisedCameraEvidenceBackend
 import com.sahidcode404.camx.core.camera.discovery.AndroidFirstInstallSeedDiscovery
@@ -73,7 +74,9 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     private val cachePersistence = AtomicCameraCachePersistence(
         File(appContext.filesDir, "camera-cache"),
     )
-    private val deepKnowledgeRepository = DeepDiscoveryKnowledgeRepository(cachePersistence)
+    private val deepKnowledgeRepository = DeepDiscoveryKnowledgeRepository(
+        AtomicDeepDiscoveryKnowledgePersistence(cachePersistence),
+    )
     private val surfaceBridge = AndroidVisiblePreviewSurfaceBridge()
     private val topologySignalScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 

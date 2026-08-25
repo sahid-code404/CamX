@@ -44,8 +44,11 @@ internal class VisiblePreviewRapidSwitchState(
         publish()
     }
 
-    fun isLatest(lens: CanonicalLensFingerprint?): Boolean =
-        lens == null || latestRequestedLens == lens
+    /** Redirects the same user intent to a recovery target without pretending it was another tap. */
+    fun redirect(lens: CanonicalLensFingerprint) {
+        latestRequestedLens = lens
+        lastOpeningKey = null
+    }
 
     fun clearLatestIf(lens: CanonicalLensFingerprint?) {
         if (lens != null && latestRequestedLens == lens) latestRequestedLens = null
@@ -55,8 +58,9 @@ internal class VisiblePreviewRapidSwitchState(
         latestRequestedLens = null
     }
 
-    fun markCleanupComplete() = updateDuration { base, value ->
-        base.copy(tapToCleanupCompleteMs = value)
+    fun markCleanupComplete() {
+        if (latestTapNs == null) return
+        updateDuration { base, value -> base.copy(tapToCleanupCompleteMs = value) }
     }
 
     fun markRetry() {
@@ -72,6 +76,10 @@ internal class VisiblePreviewRapidSwitchState(
     }
 
     fun observe(state: CameraEngineState) {
+        if (state is CameraEngineState.Previewing && state.firstFrameVerified) {
+            lastVerifiedSelection = state.selection
+        }
+        if (latestTapNs == null) return
         when (state) {
             is CameraEngineState.Opening -> {
                 val key = buildString {
@@ -93,7 +101,6 @@ internal class VisiblePreviewRapidSwitchState(
                 base.copy(tapToCameraOpenedMs = value)
             }
             is CameraEngineState.Previewing -> if (state.firstFrameVerified) {
-                lastVerifiedSelection = state.selection
                 val duration = elapsed(latestTapNs, now())
                 snapshot = snapshot.copy(
                     tapToSessionConfiguredMs = snapshot.tapToSessionConfiguredMs ?: duration,

@@ -3,29 +3,30 @@ package com.sahidcode404.camx.core.camera.session
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
  * Serializes short authoritative mutations on the camera-control dispatcher.
  *
- * Coordinator work is cancellable until it invokes the controller. Entering this gate is the
- * ownership-commit boundary: once accepted, cancellation cannot split a detach/state mutation from
- * the synchronous close and follow-up ownership mutation performed by the controller method.
+ * Waiting to acquire the gate remains cancellable so an obsolete orchestration intent can disappear
+ * before it owns camera state. Once the mutex is acquired, the caller has crossed the ownership
+ * boundary: dispatcher handoff and the non-suspending mutation finish in a NonCancellable context.
  *
- * The outer NonCancellable context intentionally keeps the caller dispatcher unchanged. This avoids
- * prompt cancellation being delivered during the return hop from the camera-control dispatcher.
- * The inner block is deliberately non-suspending: waits, timeouts, joins, deferred completion, and
- * arbitrary long work are forbidden while the mutex is held.
+ * The mutation block itself must stay short and non-suspending. Platform waits, timeouts, joins,
+ * deferred completion, discovery, disk IO, and arbitrary long work are forbidden while this mutex is
+ * held.
  */
 internal class CameraStateMutationGate(
     private val dispatcher: CoroutineDispatcher,
 ) {
     private val mutex = Mutex()
 
-    suspend fun <T> mutate(block: () -> T): T = withContext(NonCancellable) {
-        withContext(dispatcher) {
-            mutex.withLock { block() }
+    suspend fun <T> mutate(block: () -> T): T {
+        mutex.lock() // cancellable until this caller becomes the authoritative mutation owner
+        return try {
+            withContext(NonCancellable + dispatcher) { block() }
+        } finally {
+            mutex.unlock()
         }
     }
 }

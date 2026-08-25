@@ -9,11 +9,11 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 
-/** API-23-safe two-file persistence. Hot and topology records never depend on each other's decode. */
+/** API-23-safe atomic persistence for hot, topology, and bounded deep-discovery records. */
 class AtomicCameraCachePersistence internal constructor(
     private val directory: File,
     private val fileSystem: CacheFileSystem = RealCacheFileSystem,
-) : CameraCachePersistence {
+) : CameraCachePersistence, DeepDiscoveryKnowledgePersistence {
     constructor(directory: File) : this(directory, RealCacheFileSystem)
 
     override suspend fun readHot(environment: CameraEnvironmentFingerprint): CacheRead<HotStartSnapshot> =
@@ -26,15 +26,27 @@ class AtomicCameraCachePersistence internal constructor(
             TopologyCacheCodec.decode(it, environment)
         }
 
+    override suspend fun readDeepKnowledge(
+        environment: CameraEnvironmentFingerprint,
+    ): CacheRead<DeepDiscoveryKnowledge> =
+        readBounded(deepFile, CacheBounds.DEEP_FILE_BYTES) {
+            DeepDiscoveryKnowledgeCodec.decode(it, environment)
+        }
+
     override suspend fun writeHot(snapshot: HotStartSnapshot): CacheWrite =
         encodeAndWrite(hotFile, hotTempFile) { HotStartCacheCodec.encode(snapshot) }
 
     override suspend fun writeTopology(snapshot: CameraTopologySnapshot): CacheWrite =
         encodeAndWrite(topologyFile, topologyTempFile) { TopologyCacheCodec.encode(snapshot) }
 
+    override suspend fun writeDeepKnowledge(knowledge: DeepDiscoveryKnowledge): CacheWrite =
+        encodeAndWrite(deepFile, deepTempFile) { DeepDiscoveryKnowledgeCodec.encode(knowledge) }
+
     private val hotFile: File get() = File(directory, HOT_FILE_NAME)
+    private val deepFile: File get() = File(directory, DEEP_FILE_NAME)
     private val topologyFile: File get() = File(directory, TOPOLOGY_FILE_NAME)
     private val hotTempFile: File get() = File(directory, "$HOT_FILE_NAME.tmp")
+    private val deepTempFile: File get() = File(directory, "$DEEP_FILE_NAME.tmp")
     private val topologyTempFile: File get() = File(directory, "$TOPOLOGY_FILE_NAME.tmp")
 
     private fun <T> readBounded(
@@ -112,6 +124,7 @@ class AtomicCameraCachePersistence internal constructor(
 
     private companion object {
         const val HOT_FILE_NAME = "camx-hot.cache"
+        const val DEEP_FILE_NAME = "camx-deep.cache"
         const val TOPOLOGY_FILE_NAME = "camx-topology.cache"
     }
 }

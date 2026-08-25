@@ -3,14 +3,19 @@ package com.sahidcode404.camx.core.camera.bootstrap
 import android.content.Context
 import android.hardware.camera2.CameraManager
 import android.os.Build
+import com.sahidcode404.camx.core.camera.cache.AtomicCameraCachePersistence
+import com.sahidcode404.camx.core.camera.cache.DeepDiscoveryKnowledgeRepository
 import com.sahidcode404.camx.core.camera.discovery.AndroidAdvertisedCameraEvidenceBackend
 import com.sahidcode404.camx.core.camera.discovery.AndroidFirstInstallSeedDiscovery
 import com.sahidcode404.camx.core.camera.discovery.DiscoveryDepth
 import com.sahidcode404.camx.core.camera.discovery.DiscoveryMetadataBudget
+import com.sahidcode404.camx.core.camera.discovery.JavaDeepControlCertifier
 import com.sahidcode404.camx.core.camera.discovery.NdkAdvertisedCameraEvidenceBackend
+import com.sahidcode404.camx.core.camera.discovery.NdkDeepAuxDiscoveryBackend
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraRoute
+import com.sahidcode404.camx.core.camera.model.CameraRouteSource
 import com.sahidcode404.camx.core.camera.model.IntSize
 import com.sahidcode404.camx.core.camera.model.PreviewConfiguration
 import com.sahidcode404.camx.core.camera.preview.GenerationSafePreviewSurfaceProvider
@@ -19,10 +24,15 @@ import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceLease
 import com.sahidcode404.camx.core.camera.session.CameraEngineState
 import com.sahidcode404.camx.core.camera.session.CameraSessionController
-import com.sahidcode404.camx.core.camera.topology.AdvertisedTopologyEvidenceProvider
 import com.sahidcode404.camx.core.camera.topology.CameraTopologyRepository
+import com.sahidcode404.camx.core.camera.topology.JavaDeepCertificationSource
+import com.sahidcode404.camx.core.camera.topology.JavaLevel2EvidenceSource
+import com.sahidcode404.camx.core.camera.topology.NdkDeepEvidenceSource
+import com.sahidcode404.camx.core.camera.topology.NdkLevel2EvidenceSource
+import com.sahidcode404.camx.core.camera.topology.PostFirstFrameAuxDiscoveryOrchestrator
 import com.sahidcode404.camx.core.camera.topology.PostFirstFrameTopologyReconciler
 import com.sahidcode404.camx.core.settings.SettingsSnapshot
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -51,27 +61,47 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         metadataBudget = metadataBudget,
     )
     private val ndkAdvertisedDiscovery = NdkAdvertisedCameraEvidenceBackend(environment)
+    private val ndkDeepDiscovery = NdkDeepAuxDiscoveryBackend(
+        environment = environment,
+        metadataBudget = metadataBudget,
+    )
+    private val javaDeepCertifier = JavaDeepControlCertifier(
+        cameraManager = cameraManager,
+        environment = environment,
+        metadataBudget = metadataBudget,
+    )
+    private val cachePersistence = AtomicCameraCachePersistence(
+        File(appContext.filesDir, "camera-cache"),
+    )
+    private val deepKnowledgeRepository = DeepDiscoveryKnowledgeRepository(cachePersistence)
     private val surfaceBridge = AndroidVisiblePreviewSurfaceBridge()
     private val topologySignalScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     val topologyRepository = CameraTopologyRepository()
 
+    private val auxDiscoveryOrchestrator = PostFirstFrameAuxDiscoveryOrchestrator(
+        environment = environment,
+        javaLevel2 = JavaLevel2EvidenceSource { emit ->
+            javaAdvertisedDiscovery.discoverIncrementally(DiscoveryDepth.ADVERTISED, emit)
+        },
+        ndkLevel2 = NdkLevel2EvidenceSource {
+            metadataBudget.withNativeMetadata {
+                ndkAdvertisedDiscovery.discoverReport(DiscoveryDepth.ADVERTISED)
+            }
+        },
+        ndkDeep = NdkDeepEvidenceSource { request, emit ->
+            ndkDeepDiscovery.discoverIncrementally(request, emit)
+        },
+        javaDeep = JavaDeepCertificationSource { outcomes, existingJavaEvidence, emit ->
+            javaDeepCertifier.certifyIncrementally(outcomes, existingJavaEvidence, emit)
+        },
+        deepKnowledge = deepKnowledgeRepository,
+    )
+
     private val topologyReconciler = PostFirstFrameTopologyReconciler(
         environment = environment,
         repository = topologyRepository,
-        providers = listOf(
-            AdvertisedTopologyEvidenceProvider { emit ->
-                javaAdvertisedDiscovery.discoverIncrementally(DiscoveryDepth.ADVERTISED) { report ->
-                    emit(report.snapshots)
-                }
-            },
-            AdvertisedTopologyEvidenceProvider { emit ->
-                val report = metadataBudget.withNativeMetadata {
-                    ndkAdvertisedDiscovery.discoverReport(DiscoveryDepth.ADVERTISED)
-                }
-                emit(listOf(report.snapshot))
-            },
-        ),
+        providers = listOf(auxDiscoveryOrchestrator),
     )
 
     val coordinator = VisiblePreviewCoordinator(
@@ -85,13 +115,25 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     )
 
     init {
-        // Only a verified first frame arms discovery. Metadata work is independent of the camera
-        // dispatcher and each topology improvement only refreshes lens availability.
+        // Only a verified first frame arms Level-2/Level-4 discovery. Metadata work is independent of
+        // the camera dispatcher and each topology improvement only refreshes lens availability.
         topologySignalScope.launch {
             coordinator.uiState.collect { state ->
                 if (state is VisiblePreviewUiState.Previewing && state.firstFrameVerified) {
                     topologyReconciler.startAfterFirstFrame()
                 }
+            }
+        }
+        // A JAVA_DEEP_PROBED route becomes session-verified history only after the sole controller
+        // reports the exact first frame for the user's real selection.
+        topologySignalScope.launch {
+            controller.state.collect { state ->
+                val previewing = state as? CameraEngineState.Previewing ?: return@collect
+                if (!previewing.firstFrameVerified) return@collect
+                val topology = topologyRepository.topology.value ?: return@collect
+                val route = topology.routes.firstOrNull { it.id == previewing.selection.routeId } ?: return@collect
+                if (CameraRouteSource.JAVA_DEEP_PROBED !in route.sources) return@collect
+                deepKnowledgeRepository.markSessionVerified(environment, route.openCameraId.value)
             }
         }
     }

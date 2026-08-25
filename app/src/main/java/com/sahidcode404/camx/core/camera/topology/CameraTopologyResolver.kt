@@ -15,6 +15,7 @@ import com.sahidcode404.camx.core.camera.model.CameraTrust
 import com.sahidcode404.camx.core.camera.model.CanonicalLens
 import com.sahidcode404.camx.core.camera.model.CanonicalLensFingerprint
 import com.sahidcode404.camx.core.camera.model.LensFacing
+import com.sahidcode404.camx.core.camera.model.PreviewStreamType
 import com.sahidcode404.camx.core.camera.model.frozenCopy
 import java.security.MessageDigest
 
@@ -27,7 +28,7 @@ object CameraTopologyResolver {
     const val MAX_PROFILES = 128
     const val MAX_CANONICAL_LENSES = 64
     const val MAX_PROFILES_PER_LENS = 32
-    const val MAX_PROVENANCE_SOURCES = 4
+    const val MAX_PROVENANCE_SOURCES = 5
     const val MAX_FOCAL_LENGTHS = 16
     const val MAX_APERTURES = 16
     const val MAX_PREVIEW_STREAMS = 128
@@ -81,6 +82,11 @@ object CameraTopologyResolver {
                     { cluster -> clusterFingerprint(cluster) },
                 ))
             for ((clusterIndex, cluster) in clusters.withIndex()) {
+                // NDK_DEEP is discovery evidence, not Java control authority. Hidden deep evidence may
+                // enrich a known route immediately, but it cannot create a selectable route until Java
+                // metadata certification contributes coherent JAVA_DEEP_PROBED evidence.
+                if (!clusterCanFormRoute(cluster)) continue
+
                 val normalIdentity = routeIdentity(transportKey)
                 // A conflict on an otherwise identical transport must not silently inherit the old route
                 // identity/trust. The direct path keeps the frozen CAMX-102 route-ID contract while
@@ -284,6 +290,22 @@ object CameraTopologyResolver {
         return clusters.map { cluster -> cluster.distinct() }
     }
 
+    private fun clusterCanFormRoute(cluster: List<CameraMetadataEvidence>): Boolean {
+        if (cluster.any {
+                it.source == CameraRouteSource.JAVA_PUBLIC ||
+                    it.source == CameraRouteSource.JAVA_PHYSICAL ||
+                    it.source == CameraRouteSource.NDK_ADVERTISED
+            }
+        ) return true
+        val certified = cluster.filter { it.source == CameraRouteSource.JAVA_DEEP_PROBED }
+        return certified.any { evidence ->
+            evidence.sensorOrientationDegrees != null &&
+                evidence.focalLengthsMillimetres.isNotEmpty() &&
+                evidence.capabilities.previewStreams.any { it.type == PreviewStreamType.CAMERA2_PRIVATE } &&
+                evidence.capabilities.fpsRanges.isNotEmpty()
+        }
+    }
+
     private fun CameraMetadataEvidence.deterministicKey(): String = buildString {
         append(opaqueKey(transportId.value))
         append('|')
@@ -333,8 +355,9 @@ object CameraTopologyResolver {
     private fun CameraMetadataEvidence.sourcePriority(): Int = when (source) {
         CameraRouteSource.JAVA_PHYSICAL -> 0
         CameraRouteSource.JAVA_PUBLIC -> 1
-        CameraRouteSource.NDK_ADVERTISED -> 2
-        CameraRouteSource.NDK_DEEP -> 3
+        CameraRouteSource.JAVA_DEEP_PROBED -> 2
+        CameraRouteSource.NDK_ADVERTISED -> 3
+        CameraRouteSource.NDK_DEEP -> 4
     }
 
     private fun clusterFingerprint(values: List<CameraMetadataEvidence>): String = stableHash(

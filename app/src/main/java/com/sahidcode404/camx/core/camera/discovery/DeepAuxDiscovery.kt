@@ -44,6 +44,8 @@ data class DeepAuxDiscoveryRequest(
     val previouslySuccessfulDeepIds: Collection<String> = emptyList(),
     val cachedDiscoveredIds: Collection<String> = emptyList(),
     val advertisedIds: Collection<String> = emptyList(),
+    val includeNearbyCandidates: Boolean = true,
+    val includeLowNamespaceCandidates: Boolean = true,
     val limits: DeepAuxDiscoveryLimits = DeepAuxDiscoveryLimits(),
 )
 
@@ -87,39 +89,43 @@ internal object DeepAuxCandidatePlanner {
         addExact(request.previouslySuccessfulDeepIds, DeepAuxWave.HOT)
         addExact(request.cachedDiscoveredIds, DeepAuxWave.HOT)
 
-        val advertisedNumeric = request.advertisedIds.asSequence()
-            .take(DEEP_AUX_MAX_INPUT_IDS)
-            .mapNotNull { it.asBoundedNumericId(maximumNumeric) }
-            .distinct()
-            .sorted()
-            .toList()
-        advertisedNumeric.forEach { value ->
-            addCandidateIfAbsent(value.toString(), DeepAuxWave.NEARBY)
-        }
+        if (request.includeNearbyCandidates) {
+            val advertisedNumeric = request.advertisedIds.asSequence()
+                .take(DEEP_AUX_MAX_INPUT_IDS)
+                .mapNotNull { it.asBoundedNumericId(maximumNumeric) }
+                .distinct()
+                .sorted()
+                .toList()
+            advertisedNumeric.forEach { value ->
+                addCandidateIfAbsent(value.toString(), DeepAuxWave.NEARBY)
+            }
 
-        val knownNumeric = sequenceOf(
-            request.previouslySessionVerifiedDeepIds,
-            request.previouslySuccessfulDeepIds,
-            request.cachedDiscoveredIds,
-            request.advertisedIds,
-        ).flatMap(Collection<String>::asSequence)
-            .take(DEEP_AUX_MAX_INPUT_IDS)
-            .mapNotNull { it.asBoundedNumericId(maximumNumeric) }
-            .distinct()
-            .sorted()
-            .toList()
-        for (known in knownNumeric) {
-            for (distance in 1..radius) {
-                val below = known - distance
-                val above = known + distance
-                if (below >= 0) addCandidateIfAbsent(below.toString(), DeepAuxWave.NEARBY)
-                if (above <= maximumNumeric) addCandidateIfAbsent(above.toString(), DeepAuxWave.NEARBY)
+            val knownNumeric = sequenceOf(
+                request.previouslySessionVerifiedDeepIds,
+                request.previouslySuccessfulDeepIds,
+                request.cachedDiscoveredIds,
+                request.advertisedIds,
+            ).flatMap(Collection<String>::asSequence)
+                .take(DEEP_AUX_MAX_INPUT_IDS)
+                .mapNotNull { it.asBoundedNumericId(maximumNumeric) }
+                .distinct()
+                .sorted()
+                .toList()
+            for (known in knownNumeric) {
+                for (distance in 1..radius) {
+                    val below = known - distance
+                    val above = known + distance
+                    if (below >= 0) addCandidateIfAbsent(below.toString(), DeepAuxWave.NEARBY)
+                    if (above <= maximumNumeric) addCandidateIfAbsent(above.toString(), DeepAuxWave.NEARBY)
+                }
             }
         }
 
-        for (value in 0..lowMax) {
-            if (selected.size >= maximum) break
-            addCandidateIfAbsent(value.toString(), DeepAuxWave.LOW_NAMESPACE)
+        if (request.includeLowNamespaceCandidates) {
+            for (value in 0..lowMax) {
+                if (selected.size >= maximum) break
+                addCandidateIfAbsent(value.toString(), DeepAuxWave.LOW_NAMESPACE)
+            }
         }
         return DeepAuxPlan(immutableList(selected.map { DeepAuxCandidate(it.key, it.value) }))
     }

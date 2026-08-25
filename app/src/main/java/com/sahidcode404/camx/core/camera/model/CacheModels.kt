@@ -3,6 +3,7 @@ package com.sahidcode404.camx.core.camera.model
 object CameraSchemaVersions {
     const val HOT_START = 1
     const val TOPOLOGY = 1
+    const val DEEP_DISCOVERY = 1
 }
 
 data class HotStartSnapshot(

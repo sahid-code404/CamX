@@ -32,7 +32,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.sahidcode404.camx.R
 import com.sahidcode404.camx.core.camera.bootstrap.LensInventoryStatus
-import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewProblem
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewRenderSpec
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewUiState
 import com.sahidcode404.camx.core.camera.diagnostics.AuxHardwareAuditSnapshot
@@ -118,16 +117,6 @@ fun CameraScreen(
                 Text("AUX Audit")
             }
 
-            previewStatusText(uiState)?.let { status ->
-                Text(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 48.dp, start = 24.dp, end = 24.dp),
-                    text = status,
-                    color = CamXColors.TextPrimary,
-                )
-            }
-
             if (lensItems.isNotEmpty()) {
                 Row(
                     modifier = Modifier
@@ -209,18 +198,11 @@ private fun LensTestButton(
                     color = CamXColors.TextSecondary,
                 )
             }
-            Text(
-                text = statusLabel,
-                color = if (item.status == LensTestStatus.VERIFIED) {
-                    CamXColors.TextPrimary
-                } else {
-                    CamXColors.TextSecondary
-                },
-            )
         }
     }
 }
 
+/** Lifecycle state remains available to accessibility and AUX Audit, but is not visual Camera UI. */
 @Composable
 private fun lensStatusText(status: LensTestStatus): String = when (status) {
     LensTestStatus.ADVERTISED,
@@ -229,28 +211,4 @@ private fun lensStatusText(status: LensTestStatus): String = when (status) {
     LensTestStatus.OPENING -> stringResource(R.string.lens_status_opening)
     LensTestStatus.VERIFIED -> stringResource(R.string.lens_status_verified)
     LensTestStatus.FAILED -> stringResource(R.string.lens_status_failed)
-}
-
-@Composable
-private fun previewStatusText(state: VisiblePreviewUiState): String? = when (state) {
-    VisiblePreviewUiState.WaitingForPermission -> null
-    VisiblePreviewUiState.Starting -> stringResource(R.string.camera_preview_starting)
-    VisiblePreviewUiState.WaitingForSurface -> stringResource(R.string.camera_preview_waiting_surface)
-    is VisiblePreviewUiState.Opening -> stringResource(R.string.camera_preview_opening)
-    is VisiblePreviewUiState.Previewing -> if (state.firstFrameVerified) null
-    else stringResource(R.string.camera_preview_waiting_first_frame)
-    is VisiblePreviewUiState.Unavailable -> when (state.problem) {
-        VisiblePreviewProblem.NoCredibleSeed -> stringResource(R.string.camera_preview_no_camera)
-        is VisiblePreviewProblem.Capability -> stringResource(R.string.camera_preview_capability_unavailable)
-        is VisiblePreviewProblem.Policy -> stringResource(R.string.camera_preview_unsupported)
-        is VisiblePreviewProblem.Controller -> stringResource(R.string.camera_preview_camera_error)
-        is VisiblePreviewProblem.Startup -> stringResource(R.string.camera_preview_startup_error)
-    }
-    is VisiblePreviewUiState.Error -> when (state.problem) {
-        VisiblePreviewProblem.NoCredibleSeed -> stringResource(R.string.camera_preview_no_camera)
-        is VisiblePreviewProblem.Capability -> stringResource(R.string.camera_preview_capability_unavailable)
-        is VisiblePreviewProblem.Policy -> stringResource(R.string.camera_preview_unsupported)
-        is VisiblePreviewProblem.Controller -> stringResource(R.string.camera_preview_camera_error)
-        is VisiblePreviewProblem.Startup -> stringResource(R.string.camera_preview_startup_error)
-    }
 }

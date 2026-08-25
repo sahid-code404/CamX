@@ -171,7 +171,12 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         firstFrameVerified = { firstFrameVerified.get() },
         reconciliationRunning = topologyReconciler::isRunning,
         setExplicitDeepRescan = explicitDeepRescanRequested::set,
-        requestReconciliation = topologyReconciler::requestReconciliation,
+        requestReconciliation = { done ->
+            topologyReconciler.requestReconciliation(
+                preserveCurrentTopology = true,
+                onFinished = done,
+            )
+        },
         resetCaches = {
             val hadDeepMemory = deepKnowledgeRepository.current() != null
             val disk = cachePersistence.resetDiscoveryCaches()

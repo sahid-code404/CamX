@@ -7,6 +7,7 @@ import com.sahidcode404.camx.core.camera.model.CameraMetadataEvidence
 import com.sahidcode404.camx.core.camera.model.CameraRouteSource
 import com.sahidcode404.camx.core.camera.model.CameraTransportId
 import com.sahidcode404.camx.core.camera.model.LensFacing
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -25,13 +26,13 @@ class PostFirstFrameTopologyReconcilerTest {
             environment = environment,
             repository = repository,
             providers = listOf(
-                AdvertisedTopologyEvidenceProvider {
+                AdvertisedTopologyEvidenceProvider { _ ->
                     failingCalls += 1
                     throw IllegalStateException("simulated backend failure")
                 },
-                AdvertisedTopologyEvidenceProvider {
+                AdvertisedTopologyEvidenceProvider { emit ->
                     healthyCalls += 1
-                    listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("healthy")))
+                    emit(listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("healthy"))))
                 },
             ),
             clockNanos = { 100L },
@@ -48,6 +49,62 @@ class PostFirstFrameTopologyReconcilerTest {
     }
 
     @Test
+    fun `providers run concurrently rather than one after another`() {
+        val repository = CameraTopologyRepository()
+        val firstMayFinish = CompletableDeferred<Unit>()
+        var secondStarted = false
+        val reconciler = PostFirstFrameTopologyReconciler(
+            environment = environment,
+            repository = repository,
+            providers = listOf(
+                AdvertisedTopologyEvidenceProvider { emit ->
+                    emit(listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("java"))))
+                    firstMayFinish.await()
+                },
+                AdvertisedTopologyEvidenceProvider { emit ->
+                    secondStarted = true
+                    emit(listOf(snapshot(
+                        CameraRouteSource.NDK_ADVERTISED,
+                        evidence("ndk", CameraRouteSource.NDK_ADVERTISED),
+                    )))
+                    firstMayFinish.complete(Unit)
+                },
+            ),
+            dispatcher = Dispatchers.Unconfined,
+        )
+
+        reconciler.startAfterFirstFrame()
+
+        assertTrue(secondStarted)
+        assertEquals(2L, repository.publicationCount())
+        assertEquals(setOf("java", "ndk"), repository.topology.value!!.routes.map { it.openCameraId.value }.toSet())
+        reconciler.close()
+    }
+
+    @Test
+    fun `one provider can publish incremental improvements before completion`() {
+        val repository = CameraTopologyRepository()
+        val reconciler = PostFirstFrameTopologyReconciler(
+            environment = environment,
+            repository = repository,
+            providers = listOf(
+                AdvertisedTopologyEvidenceProvider { emit ->
+                    emit(listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("first"))))
+                    emit(listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("second"))))
+                },
+            ),
+            clockNanos = { 100L },
+            dispatcher = Dispatchers.Unconfined,
+        )
+
+        reconciler.startAfterFirstFrame()
+
+        assertEquals(2L, repository.publicationCount())
+        assertEquals(setOf("first", "second"), repository.topology.value!!.routes.map { it.openCameraId.value }.toSet())
+        reconciler.close()
+    }
+
+    @Test
     fun `both backend failures publish empty current topology instead of stale cameras`() {
         val previous = CameraTopologyResolver.resolve(
             environment = environment,
@@ -59,8 +116,8 @@ class PostFirstFrameTopologyReconcilerTest {
             environment = environment,
             repository = repository,
             providers = listOf(
-                AdvertisedTopologyEvidenceProvider { error("java unavailable") },
-                AdvertisedTopologyEvidenceProvider { error("ndk unavailable") },
+                AdvertisedTopologyEvidenceProvider { _ -> error("java unavailable") },
+                AdvertisedTopologyEvidenceProvider { _ -> error("ndk unavailable") },
             ),
             clockNanos = { 101L },
             dispatcher = Dispatchers.Unconfined,
@@ -83,9 +140,9 @@ class PostFirstFrameTopologyReconcilerTest {
             environment = environment,
             repository = repository,
             providers = listOf(
-                AdvertisedTopologyEvidenceProvider {
+                AdvertisedTopologyEvidenceProvider { emit ->
                     calls += 1
-                    listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("once")))
+                    emit(listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("once"))))
                 },
             ),
             clockNanos = { 102L },
@@ -109,10 +166,7 @@ class PostFirstFrameTopologyReconcilerTest {
             environment = environment,
             repository = repository,
             providers = listOf(
-                AdvertisedTopologyEvidenceProvider {
-                    calls += 1
-                    emptyList()
-                },
+                AdvertisedTopologyEvidenceProvider { _ -> calls += 1 },
             ),
             dispatcher = Dispatchers.Unconfined,
         )
@@ -134,15 +188,15 @@ class PostFirstFrameTopologyReconcilerTest {
             environment = environment,
             repository = repository,
             providers = listOf(
-                AdvertisedTopologyEvidenceProvider {
-                    listOf(
+                AdvertisedTopologyEvidenceProvider { emit ->
+                    emit(listOf(
                         CameraEvidenceSnapshot(
                             source = CameraRouteSource.JAVA_PUBLIC,
                             environment = environment,
                             evidence = oversized,
                             completedAtElapsedRealtimeNs = 1L,
                         ),
-                    )
+                    ))
                 },
             ),
             dispatcher = Dispatchers.Unconfined,
@@ -150,8 +204,8 @@ class PostFirstFrameTopologyReconcilerTest {
 
         reconciler.startAfterFirstFrame()
 
-        assertEquals(0L, repository.publicationCount())
-        assertEquals(null, repository.topology.value)
+        assertEquals(1L, repository.publicationCount())
+        assertTrue(repository.topology.value!!.routes.isEmpty())
         reconciler.close()
     }
 
@@ -162,8 +216,11 @@ class PostFirstFrameTopologyReconcilerTest {
             environment = environment,
             repository = repository,
             providers = listOf(
-                AdvertisedTopologyEvidenceProvider {
-                    listOf(snapshot(CameraRouteSource.NDK_ADVERTISED, evidence("ndk", CameraRouteSource.NDK_ADVERTISED)))
+                AdvertisedTopologyEvidenceProvider { emit ->
+                    emit(listOf(snapshot(
+                        CameraRouteSource.NDK_ADVERTISED,
+                        evidence("ndk", CameraRouteSource.NDK_ADVERTISED),
+                    )))
                 },
             ),
             clockNanos = { -5L },

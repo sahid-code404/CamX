@@ -20,7 +20,6 @@ class CameraTopologyRepository(initial: CameraTopologySnapshot? = null) {
     private val mutableTopology = MutableStateFlow(acceptedInitial?.frozenCopy())
     private var activeEnvironment = acceptedInitial?.environment
     private var activeReconciliation = 0L
-    private var lastPublishedReconciliation = -1L
 
     val topology: StateFlow<CameraTopologySnapshot?> = mutableTopology.asStateFlow()
 
@@ -35,20 +34,22 @@ class CameraTopologyRepository(initial: CameraTopologySnapshot? = null) {
         return TopologyPublicationPermit(environment, activeReconciliation)
     }
 
+    /**
+     * Publishes one immutable generation-safe topology improvement. The active reconciliation may
+     * publish repeatedly as independent discovery waves complete; any older permit is rejected.
+     */
     @Synchronized
     fun publish(
         snapshot: CameraTopologySnapshot,
         permit: TopologyPublicationPermit,
     ): Boolean {
         if (permit.reconciliationSequence != activeReconciliation ||
-            permit.reconciliationSequence == lastPublishedReconciliation ||
             permit.environment != activeEnvironment ||
             snapshot.environment != permit.environment ||
             snapshot.schema != CameraSchemaVersions.TOPOLOGY
         ) return false
         publicationSequence.incrementAndGet()
         mutableTopology.value = snapshot.frozenCopy()
-        lastPublishedReconciliation = permit.reconciliationSequence
         return true
     }
 

@@ -10,17 +10,22 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 internal fun interface AdvertisedTopologyEvidenceProvider {
-    suspend fun collect(): List<CameraEvidenceSnapshot>
+    /** Emits one or more bounded evidence batches. A provider failure must not cancel its peers. */
+    suspend fun collect(emit: suspend (List<CameraEvidenceSnapshot>) -> Unit)
 }
 
 /**
- * One-shot, post-first-frame advertised reconciliation.
+ * One-shot, post-first-frame incremental reconciliation.
  *
- * This owns only low-frequency metadata work on Dispatchers.Default. It never runs on
- * CameraSessionController's camera dispatcher and publishing a topology never restarts preview.
+ * Independent metadata providers execute concurrently on low-frequency background work. Every
+ * credible bounded batch is merged with evidence already observed in this reconciliation and may
+ * publish an improved immutable topology immediately. CameraSessionController is never touched.
  */
 internal class PostFirstFrameTopologyReconciler(
     private val environment: CameraEnvironmentFingerprint,
@@ -46,36 +51,59 @@ internal class PostFirstFrameTopologyReconciler(
             val previous = repository.topology.value
             val permit = repository.beginReconciliation(environment)
             val snapshots = ArrayList<CameraEvidenceSnapshot>()
-            for (provider in providers) {
-                if (closed.get()) return@launch
-                val provided = try {
-                    provider.collect()
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Throwable) {
-                    // A failed backend is additional evidence loss, not a reason to erase a healthy backend.
-                    emptyList()
-                }
-                snapshots += provided
-                if (snapshots.sumOf { it.evidence.size } > CameraTopologyResolver.MAX_TOTAL_EVIDENCE) {
-                    // Fail closed before invoking expensive reconciliation on pathological input.
-                    return@launch
+            val publicationMutex = Mutex()
+            var publishedAnyBatch = false
+
+            suspend fun publishBatch(batch: List<CameraEvidenceSnapshot>) {
+                if (batch.isEmpty() || closed.get()) return
+                publicationMutex.withLock {
+                    if (closed.get()) return@withLock
+                    require(batch.all { it.environment == environment }) {
+                        "Advertised evidence batch environment mismatch"
+                    }
+                    val proposedTotal = snapshots.sumOf { it.evidence.size } + batch.sumOf { it.evidence.size }
+                    if (proposedTotal > CameraTopologyResolver.MAX_TOTAL_EVIDENCE) return@withLock
+                    snapshots += batch
+                    val resolved = try {
+                        CameraTopologyResolver.resolve(
+                            environment = environment,
+                            snapshots = snapshots,
+                            generatedAtElapsedRealtimeNs = clockNanos().coerceAtLeast(0L),
+                            previousTrustedTopology = previous,
+                        )
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: IllegalArgumentException) {
+                        return@withLock
+                    }
+                    if (!closed.get() && repository.publish(resolved, permit)) publishedAnyBatch = true
                 }
             }
-            if (closed.get()) return@launch
-            val resolved = try {
-                CameraTopologyResolver.resolve(
-                    environment = environment,
-                    snapshots = snapshots,
-                    generatedAtElapsedRealtimeNs = clockNanos().coerceAtLeast(0L),
-                    previousTrustedTopology = previous,
-                )
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: IllegalArgumentException) {
-                return@launch
+
+            coroutineScope {
+                providers.forEach { provider ->
+                    launch {
+                        try {
+                            provider.collect(::publishBatch)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Throwable) {
+                            // Backend failure is isolated. Healthy peers may continue publishing.
+                        }
+                    }
+                }
             }
-            if (!closed.get()) repository.publish(resolved, permit)
+
+            if (closed.get() || publishedAnyBatch) return@launch
+            // If every provider failed or returned no evidence, publish an empty current topology so
+            // stale cached cameras are not misrepresented as freshly discovered.
+            val empty = CameraTopologyResolver.resolve(
+                environment = environment,
+                snapshots = emptyList(),
+                generatedAtElapsedRealtimeNs = clockNanos().coerceAtLeast(0L),
+                previousTrustedTopology = previous,
+            )
+            if (!closed.get()) repository.publish(empty, permit)
         }
     }
 

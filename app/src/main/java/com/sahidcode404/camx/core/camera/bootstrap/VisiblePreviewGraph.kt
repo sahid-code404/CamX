@@ -6,6 +6,7 @@ import android.os.Build
 import com.sahidcode404.camx.core.camera.discovery.AndroidAdvertisedCameraEvidenceBackend
 import com.sahidcode404.camx.core.camera.discovery.AndroidFirstInstallSeedDiscovery
 import com.sahidcode404.camx.core.camera.discovery.DiscoveryDepth
+import com.sahidcode404.camx.core.camera.discovery.DiscoveryMetadataBudget
 import com.sahidcode404.camx.core.camera.discovery.NdkAdvertisedCameraEvidenceBackend
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
@@ -43,9 +44,11 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         cameraManager = cameraManager,
         environment = environment,
     )
+    private val metadataBudget = DiscoveryMetadataBudget()
     private val javaAdvertisedDiscovery = AndroidAdvertisedCameraEvidenceBackend(
         cameraManager = cameraManager,
         environment = environment,
+        metadataBudget = metadataBudget,
     )
     private val ndkAdvertisedDiscovery = NdkAdvertisedCameraEvidenceBackend(environment)
     private val surfaceBridge = AndroidVisiblePreviewSurfaceBridge()
@@ -57,11 +60,16 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         environment = environment,
         repository = topologyRepository,
         providers = listOf(
-            AdvertisedTopologyEvidenceProvider {
-                javaAdvertisedDiscovery.discoverReport(DiscoveryDepth.ADVERTISED).snapshots
+            AdvertisedTopologyEvidenceProvider { emit ->
+                javaAdvertisedDiscovery.discoverIncrementally(DiscoveryDepth.ADVERTISED) { report ->
+                    emit(report.snapshots)
+                }
             },
-            AdvertisedTopologyEvidenceProvider {
-                listOf(ndkAdvertisedDiscovery.discoverReport(DiscoveryDepth.ADVERTISED).snapshot)
+            AdvertisedTopologyEvidenceProvider { emit ->
+                val report = metadataBudget.withNativeMetadata {
+                    ndkAdvertisedDiscovery.discoverReport(DiscoveryDepth.ADVERTISED)
+                }
+                emit(listOf(report.snapshot))
             },
         ),
     )
@@ -77,8 +85,8 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     )
 
     init {
-        // Only the verified first-frame state arms CAMX-107. The heavy metadata work itself runs on
-        // the reconciler's Default dispatcher and publication never restarts the working preview.
+        // Only a verified first frame arms discovery. Metadata work is independent of the camera
+        // dispatcher and each topology improvement only refreshes lens availability.
         topologySignalScope.launch {
             coordinator.uiState.collect { state ->
                 if (state is VisiblePreviewUiState.Previewing && state.firstFrameVerified) {

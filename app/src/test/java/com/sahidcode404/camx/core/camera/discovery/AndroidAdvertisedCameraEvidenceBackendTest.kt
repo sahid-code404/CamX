@@ -9,9 +9,14 @@ import com.sahidcode404.camx.core.camera.model.CameraStreamCapability
 import com.sahidcode404.camx.core.camera.model.IntSize
 import com.sahidcode404.camx.core.camera.model.LensFacing
 import com.sahidcode404.camx.core.camera.model.PreviewStreamType
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.startCoroutine
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -30,7 +35,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `one rear public route retains bounded metadata`() = runSuspend {
+    fun `one rear public route retains bounded enriched metadata`() = runSuspend {
         val source = FakeSource(
             listOf("rear-token"),
             mutableMapOf("rear-token" to record("rear-token", facing = LensFacing.BACK)),
@@ -66,24 +71,22 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `logical parent emits physical member routes through parent`() = runSuspend {
-        val parent = record("logical-x", physicalIds = listOf("wide-member", "tele-member"))
+    fun `physical relationships publish before child metadata enrichment`() = runSuspend {
         val source = FakeSource(
             listOf("logical-x"),
             mutableMapOf(
-                "logical-x" to parent,
+                "logical-x" to record("logical-x", physicalIds = listOf("wide-member", "tele-member")),
                 "wide-member" to record("wide-member", focal = 2.0f),
                 "tele-member" to record("tele-member", focal = 8.0f),
             ),
         )
-        val report = backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
-        val physical = report.snapshotFor(CameraRouteSource.JAVA_PHYSICAL)!!.evidence
+        val emissions = ArrayList<JavaAdvertisedEvidenceReport>()
+        backend(source).discoverIncrementally(DiscoveryDepth.ADVERTISED) { emissions += it }
 
-        assertEquals(2, physical.size)
-        assertTrue(physical.all { it.transportId.value == "logical-x" })
-        assertTrue(physical.all { it.logicalParentId?.value == "logical-x" })
-        assertEquals(setOf("wide-member", "tele-member"), physical.mapNotNull { it.physicalId?.value }.toSet())
-        assertTrue(physical.all { it.source == CameraRouteSource.JAVA_PHYSICAL })
+        val firstPhysical = emissions.firstNotNullOf { it.snapshotFor(CameraRouteSource.JAVA_PHYSICAL) }
+        assertEquals(setOf("wide-member", "tele-member"), firstPhysical.evidence.mapNotNull { it.physicalId?.value }.toSet())
+        assertTrue(firstPhysical.evidence.all { it.capabilities.previewStreams.isEmpty() })
+        assertEquals(setOf("wide-member", "tele-member"), source.enrichedReads.filterNot { it == "logical-x" }.toSet())
     }
 
     @Test
@@ -182,7 +185,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
         val report = backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
 
         assertEquals(1, report.snapshotFor(CameraRouteSource.JAVA_PUBLIC)!!.evidence.size)
-        assertEquals(listOf("logical"), source.reads)
+        assertTrue(source.reads.all { it == "logical" })
         assertTrue(report.snapshotFor(CameraRouteSource.JAVA_PHYSICAL) == null)
         assertTrue(report.failures.any {
             it.kind == JavaAdvertisedEvidenceFailureKind.PHYSICAL_ID_LIMIT_EXCEEDED
@@ -211,6 +214,33 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
+    fun `java metadata work never exceeds configured three lanes`() = runBlocking(Dispatchers.Default) {
+        val active = AtomicInteger(0)
+        val maximum = AtomicInteger(0)
+        val allEntered = CountDownLatch(DEFAULT_JAVA_METADATA_LANES)
+        val release = CountDownLatch(1)
+        val records = (0 until 6).associate { index -> "id-$index" to record("id-$index") }.toMutableMap()
+        val source = object : JavaAdvertisedCameraMetadataSource {
+            override fun advertisedIds(): List<String> = records.keys.toList()
+            override fun read(id: String): JavaAdvertisedCameraRecord? = records[id]
+            override fun readMinimal(id: String): JavaAdvertisedCameraRecord? {
+                val now = active.incrementAndGet()
+                maximum.updateAndGet { old -> maxOf(old, now) }
+                allEntered.countDown()
+                if (allEntered.count == 0L) release.countDown()
+                release.await(2, TimeUnit.SECONDS)
+                active.decrementAndGet()
+                return records[id]?.minimalCopy()
+            }
+        }
+
+        backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
+
+        assertTrue(maximum.get() <= DEFAULT_JAVA_METADATA_LANES)
+        assertEquals(DEFAULT_JAVA_METADATA_LANES, maximum.get())
+    }
+
+    @Test
     fun `published evidence and failures reject mutation`() = runSuspend {
         val source = FakeSource(listOf("rear"), mutableMapOf("rear" to record("rear")))
         val report = backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
@@ -232,6 +262,7 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
             environment = environment,
             clockNanos = { 123L },
             source = source,
+            metadataBudget = DiscoveryMetadataBudget(),
         )
 
     private fun record(
@@ -284,11 +315,19 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
         private val failReads: Set<String> = emptySet(),
     ) : JavaAdvertisedCameraMetadataSource {
         val reads = ArrayList<String>()
+        val enrichedReads = ArrayList<String>()
 
         override fun advertisedIds(): List<String> = ids
 
+        override fun readMinimal(id: String): JavaAdvertisedCameraRecord? {
+            reads += id
+            if (id in failReads) throw IllegalStateException("inaccessible")
+            return records[id]?.minimalCopy()
+        }
+
         override fun read(id: String): JavaAdvertisedCameraRecord? {
             reads += id
+            enrichedReads += id
             if (id in failReads) throw IllegalStateException("inaccessible")
             return records[id]
         }

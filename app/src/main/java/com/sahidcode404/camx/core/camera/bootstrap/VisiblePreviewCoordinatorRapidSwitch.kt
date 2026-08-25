@@ -15,8 +15,11 @@ internal class VisiblePreviewRapidSwitchState(
 ) {
     var latestRequestedLens: CanonicalLensFingerprint? = null
         private set
-    var lastVerifiedSelection: ActiveCameraSelection? = null
-        private set
+
+    private var verifiedSelection: ActiveCameraSelection? = null
+    private var suppressCrossCanonicalFallback = false
+    val lastVerifiedSelection: ActiveCameraSelection?
+        get() = if (suppressCrossCanonicalFallback) null else verifiedSelection
 
     private var latestTapNs: Long? = null
     private var acceptedNs: Long? = null
@@ -34,6 +37,7 @@ internal class VisiblePreviewRapidSwitchState(
         latestTapNs = tapNs.coerceAtLeast(0L)
         acceptedNs = now()
         lastOpeningKey = null
+        suppressCrossCanonicalFallback = false
         snapshot = LensSwitchDiagnostics(
             tapToAcceptedMs = elapsed(latestTapNs, acceptedNs),
             supersededIntentCount = superseded,
@@ -51,7 +55,8 @@ internal class VisiblePreviewRapidSwitchState(
     }
 
     fun recordVerifiedSelection(selection: ActiveCameraSelection) {
-        lastVerifiedSelection = selection
+        verifiedSelection = selection
+        suppressCrossCanonicalFallback = false
     }
 
     fun clearLatestIf(lens: CanonicalLensFingerprint?) {
@@ -60,6 +65,7 @@ internal class VisiblePreviewRapidSwitchState(
 
     fun clearPending() {
         latestRequestedLens = null
+        suppressCrossCanonicalFallback = false
     }
 
     fun markCleanupComplete() {
@@ -84,6 +90,20 @@ internal class VisiblePreviewRapidSwitchState(
         val latest = latestRequestedLens
         val observedLens = stateCanonicalLens(state)
         if (latest != null && observedLens != null && observedLens != latest) return
+
+        // Structural failures are owned by same-canonical LensProfileFailoverPlanner. Hiding the
+        // previous verified selection for this projection prevents the transient cross-canonical
+        // fallback path from running after structural failover is exhausted. Once a replacement
+        // target starts opening, a later retryable failure may use normal transient recovery again.
+        when (state) {
+            is CameraEngineState.StructuralError -> suppressCrossCanonicalFallback = true
+            is CameraEngineState.Opening,
+            is CameraEngineState.ConfiguringPreview,
+            is CameraEngineState.Previewing,
+            -> suppressCrossCanonicalFallback = false
+            else -> Unit
+        }
+
         when (state) {
             is CameraEngineState.Opening -> {
                 val key = buildString {

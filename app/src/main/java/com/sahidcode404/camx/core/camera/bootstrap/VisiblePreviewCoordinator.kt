@@ -250,7 +250,8 @@ class VisiblePreviewCoordinator internal constructor(
             activeSelection = null
             mutableRenderSpec.value = null
             mutableUiState.value = VisiblePreviewUiState.Starting
-            refreshLensProjection()
+            // Do not rehydrate the outgoing verified session snapshot over explicit pending user intent.
+            mutableLensItems.value = currentLensProjection().items
 
             invalidateStartup()
             val generation = startupGeneration

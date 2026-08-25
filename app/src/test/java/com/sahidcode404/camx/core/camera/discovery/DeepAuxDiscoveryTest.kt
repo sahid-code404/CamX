@@ -60,6 +60,58 @@ class DeepAuxDiscoveryTest {
     }
 
     @Test
+    fun `hot candidate keeps priority when nearby also reaches same id`() {
+        val plan = DeepAuxCandidatePlanner.plan(
+            DeepAuxDiscoveryRequest(
+                previouslySuccessfulDeepIds = listOf("5"),
+                advertisedIds = listOf("5"),
+                limits = DeepAuxDiscoveryLimits(
+                    lowNumericNamespaceMax = 0,
+                    neighborRadius = 1,
+                    maximumNumericId = 10,
+                    maximumCandidateCount = 20,
+                ),
+            ),
+        )
+
+        assertEquals(DeepAuxWave.HOT, plan.candidates.single { it.transportId == "5" }.wave)
+        assertEquals(1, plan.candidates.count { it.transportId == "5" })
+    }
+
+    @Test
+    fun `nearby candidate keeps priority when low namespace also reaches same id`() {
+        val plan = DeepAuxCandidatePlanner.plan(
+            DeepAuxDiscoveryRequest(
+                advertisedIds = listOf("3"),
+                limits = DeepAuxDiscoveryLimits(
+                    lowNumericNamespaceMax = 3,
+                    neighborRadius = 0,
+                    maximumNumericId = 10,
+                    maximumCandidateCount = 20,
+                ),
+            ),
+        )
+
+        assertEquals(DeepAuxWave.NEARBY, plan.candidates.single { it.transportId == "3" }.wave)
+        assertEquals(1, plan.candidates.count { it.transportId == "3" })
+    }
+
+    @Test
+    fun `duplicate hot sources produce one hot candidate`() {
+        val plan = DeepAuxCandidatePlanner.plan(
+            DeepAuxDiscoveryRequest(
+                previouslySessionVerifiedDeepIds = listOf("shared-hot"),
+                previouslySuccessfulDeepIds = listOf("shared-hot"),
+                cachedDiscoveredIds = listOf("shared-hot"),
+                limits = DeepAuxDiscoveryLimits(lowNumericNamespaceMax = 0, neighborRadius = 0),
+            ),
+        )
+
+        assertEquals(DeepAuxWave.HOT, plan.candidates.single { it.transportId == "shared-hot" }.wave)
+        assertEquals(1, plan.candidates.count { it.transportId == "shared-hot" })
+    }
+
+    @Test
     fun `default low namespace includes zero through thirty one when space remains`() {
         val plan = DeepAuxCandidatePlanner.plan(DeepAuxDiscoveryRequest())
         val ids = plan.candidates.map { it.transportId }.toSet()

@@ -100,7 +100,7 @@ object CameraTopologyResolver {
                         old.physicalCameraId == advertised.physicalCameraId &&
                         previousEvidence.isNotEmpty() &&
                         previousEvidence.all { oldEvidence ->
-                            values.all { current -> !meaningfulMetadataConflict(current, oldEvidence) }
+                            values.all { current -> !metadataConflicts(current, oldEvidence) }
                         }
                 }
             val route = if (previous == null) advertised else advertised.copy(
@@ -364,7 +364,7 @@ object CameraTopologyResolver {
     }
 
     /** Only material contradictions invalidate previously verified route trust. */
-    private fun meaningfulMetadataConflict(left: CameraMetadataEvidence, right: CameraMetadataEvidence): Boolean {
+    private fun metadataConflicts(left: CameraMetadataEvidence, right: CameraMetadataEvidence): Boolean {
         if (left.facing != LensFacing.UNKNOWN && right.facing != LensFacing.UNKNOWN && left.facing != right.facing) {
             return true
         }

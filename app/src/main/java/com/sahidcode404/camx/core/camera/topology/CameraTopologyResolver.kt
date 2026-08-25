@@ -139,21 +139,33 @@ object CameraTopologyResolver {
             }
         }
 
-        val canonicalLenses = groups.map { group ->
-            val fingerprint = CanonicalLensFingerprint(
-                "lens:${stableHash("parity1|" + group.map { it.profile.fingerprint.value }.sorted().joinToString("|"))}",
+        val canonicalGroups = groups.map { group ->
+            val metadata = CanonicalLensOptics.merge(group.flatMap { it.evidence })
+            CanonicalGroup(
+                profiles = group,
+                metadata = metadata,
+                stableFingerprint = CanonicalLensOptics.stableFingerprint(metadata),
+                fallbackFingerprint = CanonicalLensOptics.fallbackFingerprint(
+                    environment = environment,
+                    profiles = group.map { it.profile.fingerprint },
+                ),
             )
-            val profiles = group.map { it.profile.copy(canonicalFingerprint = fingerprint) }
+        }
+        val stableFingerprintCounts = canonicalGroups.mapNotNull { it.stableFingerprint }
+            .groupingBy { it }
+            .eachCount()
+        val canonicalLenses = canonicalGroups.map { group ->
+            // A stable optical key is usable only when it uniquely names one complete-link group.
+            // If sparse evidence makes two independent groups collide, fall back rather than merge.
+            val fingerprint = group.stableFingerprint
+                ?.takeIf { stableFingerprintCounts[it] == 1 }
+                ?: group.fallbackFingerprint
+            val profiles = group.profiles
+                .map { it.profile.copy(canonicalFingerprint = fingerprint) }
                 .sortedBy { it.fingerprint.value }
-            val knownFacings = group.asSequence()
-                .flatMap { it.evidence.asSequence() }
-                .map { it.facing }
-                .filterNot { it == LensFacing.UNKNOWN }
-                .distinct()
-                .toList()
             CanonicalLens(
                 fingerprint = fingerprint,
-                facing = knownFacings.singleOrNull() ?: LensFacing.UNKNOWN,
+                facing = group.metadata.facing,
                 profiles = profiles,
             )
         }.sortedBy { it.fingerprint.value }
@@ -257,6 +269,13 @@ object CameraTopologyResolver {
     private data class ProfileCandidate(
         val profile: CameraProfile,
         val evidence: List<CameraMetadataEvidence>,
+    )
+
+    private data class CanonicalGroup(
+        val profiles: List<ProfileCandidate>,
+        val metadata: CanonicalLensOpticalMetadata,
+        val stableFingerprint: CanonicalLensFingerprint?,
+        val fallbackFingerprint: CanonicalLensFingerprint,
     )
 
     private data class GroupFit(

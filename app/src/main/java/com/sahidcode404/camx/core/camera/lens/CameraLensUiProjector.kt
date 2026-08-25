@@ -6,6 +6,7 @@ import com.sahidcode404.camx.core.camera.model.CameraTopologySnapshot
 import com.sahidcode404.camx.core.camera.model.CanonicalLens
 import com.sahidcode404.camx.core.camera.model.CanonicalLensFingerprint
 import com.sahidcode404.camx.core.camera.model.LensFacing
+import com.sahidcode404.camx.core.camera.topology.CanonicalLensOptics
 import java.math.BigDecimal
 import java.math.RoundingMode
 
@@ -67,6 +68,7 @@ internal object CameraLensUiProjector {
         val rankedTargetsByLens = LinkedHashMap<CanonicalLensFingerprint, List<LensSelectionTarget>>()
 
         val works = topology.canonicalLenses.mapNotNull { lens ->
+            if (CanonicalLensTrustAggregator.aggregate(lens).structurallyUnavailable) return@mapNotNull null
             val candidates = lens.profiles.mapNotNull { profile ->
                 val eligibility = if (profile.fingerprint in input.structurallyFailedProfiles) {
                     LensProfileEligibility.Rejected(
@@ -91,7 +93,7 @@ internal object CameraLensUiProjector {
             )
             rankedTargetsByLens[lens.fingerprint] = ranked
             val target = ranked.firstOrNull() ?: return@mapNotNull null
-            val optical = opticalEvidence(topology, target)
+            val optical = opticalEvidence(topology, lens)
             LensWork(
                 lens = lens,
                 target = target,
@@ -150,22 +152,10 @@ internal object CameraLensUiProjector {
         else -> status
     }
 
-    private fun opticalEvidence(topology: CameraTopologySnapshot, target: LensSelectionTarget): OpticalEvidence {
-        val evidence = LensProfileEligibilityResolver.compatiblePreviewEvidence(
-            topology = topology,
-            route = target.route,
-            metadata = target.previewMetadata,
-        )
-        if (evidence.any { it.focalLengthsMillimetres.size > 1 }) return OpticalEvidence(null, null)
-        val focals = evidence.asSequence()
-            .filter { it.focalLengthsMillimetres.size == 1 }
-            .map { it.focalLengthsMillimetres.single() }
-            .distinctBy(Float::toRawBits)
-            .toList()
-        val focal = focals.singleOrNull()
-        val widths = evidence.mapNotNull { it.sensorPhysicalWidthMillimetres }
-            .distinctBy(Float::toRawBits)
-        val width = widths.singleOrNull()
+    private fun opticalEvidence(topology: CameraTopologySnapshot, lens: CanonicalLens): OpticalEvidence {
+        val metadata = CanonicalLensOptics.resolve(topology, lens)
+        val focal = metadata.focalLengthMillimetres
+        val width = metadata.sensorPhysicalWidthMillimetres
         val metric = if (focal != null && width != null && width > 0f) {
             focal.toDouble() / width.toDouble()
         } else {

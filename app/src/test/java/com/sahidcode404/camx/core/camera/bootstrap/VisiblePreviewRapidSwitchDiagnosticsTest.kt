@@ -21,7 +21,7 @@ class VisiblePreviewRapidSwitchDiagnosticsTest {
         val published = mutableListOf<LensSwitchDiagnostics>()
         val state = VisiblePreviewRapidSwitchState(
             clockNanos = { nowNs },
-            sink = published::add,
+            sink = { published += it },
         )
         val a = selection("a", selectionGeneration = 1L, sessionGeneration = 1L)
 

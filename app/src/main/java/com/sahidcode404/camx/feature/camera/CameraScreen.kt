@@ -17,7 +17,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -30,6 +34,7 @@ import com.sahidcode404.camx.R
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewProblem
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewRenderSpec
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewUiState
+import com.sahidcode404.camx.core.camera.diagnostics.AuxHardwareAuditSnapshot
 import com.sahidcode404.camx.core.camera.lens.CameraLensUiItem
 import com.sahidcode404.camx.core.camera.lens.LensTestStatus
 import com.sahidcode404.camx.core.camera.model.CanonicalLensFingerprint
@@ -45,13 +50,17 @@ fun CameraScreen(
     uiState: VisiblePreviewUiState,
     renderSpec: VisiblePreviewRenderSpec?,
     lensItems: List<CameraLensUiItem>,
+    auxAudit: AuxHardwareAuditSnapshot = AuxHardwareAuditSnapshot(),
     onLensSelected: (CanonicalLensFingerprint) -> Unit,
+    onDeepRescan: () -> Unit = {},
+    onResetDiscoveryCache: () -> Unit = {},
     onSurfaceAvailable: (PreviewSurfaceBinding) -> Unit,
     onSurfaceDestroyed: (PreviewSurfaceIdentity) -> Unit,
     onOpenAppSettings: () -> Unit,
 ) {
     val previewContentDescription = stringResource(R.string.camera_preview_content_description)
     val captureContentDescription = stringResource(R.string.capture_unavailable_content_description)
+    var showAuxAudit by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -85,6 +94,15 @@ fun CameraScreen(
                 }
             }
         } else {
+            TextButton(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 32.dp, end = 12.dp),
+                onClick = { showAuxAudit = true },
+            ) {
+                Text("AUX Audit")
+            }
+
             previewStatusText(uiState)?.let { status ->
                 Text(
                     modifier = Modifier
@@ -130,6 +148,15 @@ fun CameraScreen(
             onClick = {},
         ) {
             Box(modifier = Modifier.size(1.dp))
+        }
+
+        if (showAuxAudit) {
+            AuxHardwareAuditPanel(
+                audit = auxAudit,
+                onClose = { showAuxAudit = false },
+                onDeepRescan = onDeepRescan,
+                onResetDiscoveryCache = onResetDiscoveryCache,
+            )
         }
     }
 }

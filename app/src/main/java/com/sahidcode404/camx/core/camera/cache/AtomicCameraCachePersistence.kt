@@ -9,6 +9,12 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 
+enum class DiscoveryCacheResetResult {
+    SUCCESS,
+    FAILED,
+    NOTHING_TO_RESET,
+}
+
 /** API-23-safe atomic persistence for hot, topology, and bounded deep-discovery records. */
 class AtomicCameraCachePersistence internal constructor(
     private val directory: File,
@@ -41,6 +47,22 @@ class AtomicCameraCachePersistence internal constructor(
 
     internal suspend fun writeDeepKnowledgeInternal(knowledge: DeepDiscoveryKnowledge): CacheWrite =
         encodeAndWrite(deepFile, deepTempFile) { DeepDiscoveryKnowledgeCodec.encode(knowledge) }
+
+    /** Clears only topology/deep discovery persistence. User settings and the hot preview cache stay intact. */
+    internal suspend fun resetDiscoveryCaches(): DiscoveryCacheResetResult {
+        val targets = listOf(topologyFile, topologyTempFile, deepFile, deepTempFile)
+        return try {
+            val existing = targets.filter(fileSystem::exists)
+            if (existing.isEmpty()) return DiscoveryCacheResetResult.NOTHING_TO_RESET
+            if (existing.all(fileSystem::delete)) {
+                DiscoveryCacheResetResult.SUCCESS
+            } else {
+                DiscoveryCacheResetResult.FAILED
+            }
+        } catch (_: Exception) {
+            DiscoveryCacheResetResult.FAILED
+        }
+    }
 
     private val hotFile: File get() = File(directory, HOT_FILE_NAME)
     private val deepFile: File get() = File(directory, DEEP_FILE_NAME)

@@ -39,6 +39,7 @@ class MainActivity : ComponentActivity() {
                 val uiState by visiblePreviewGraph.coordinator.uiState.collectAsState()
                 val renderSpec by visiblePreviewGraph.coordinator.renderSpec.collectAsState()
                 val lensItems by visiblePreviewGraph.coordinator.lensItems.collectAsState()
+                val auxAudit by visiblePreviewGraph.auxAudit.collectAsState()
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
@@ -57,7 +58,10 @@ class MainActivity : ComponentActivity() {
                     uiState = uiState,
                     renderSpec = renderSpec,
                     lensItems = lensItems,
+                    auxAudit = auxAudit,
                     onLensSelected = visiblePreviewGraph.coordinator::selectLens,
+                    onDeepRescan = { visiblePreviewGraph.requestDeepRescan() },
+                    onResetDiscoveryCache = visiblePreviewGraph::resetDiscoveryCache,
                     onSurfaceAvailable = visiblePreviewGraph::publishSurface,
                     onSurfaceDestroyed = visiblePreviewGraph::surfaceDestroyed,
                     onOpenAppSettings = ::openAppSettings,

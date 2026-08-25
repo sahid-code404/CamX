@@ -30,13 +30,14 @@ internal enum class EvidenceMergeResult {
     REJECTED,
 }
 
-/**
- * Holds only the current evidence record for each semantic evidence address.
- *
- * Stage-A sparse/minimal records and Stage-B enriched records therefore never coexist as historical
- * duplicates. Richer evidence wins independent of arrival order; equally rich conflicts use a
- * deterministic content key so provider scheduling cannot change the final bounded evidence set.
- */
+internal enum class ReconciliationRequestResult {
+    STARTED,
+    NOT_ARMED,
+    ALREADY_RUNNING,
+    CLOSED,
+}
+
+/** Holds only the current evidence record for each semantic evidence address. */
 internal class CurrentTopologyEvidenceAccumulator(
     private val environment: CameraEnvironmentFingerprint,
 ) {
@@ -89,8 +90,7 @@ internal class CurrentTopologyEvidenceAccumulator(
     }
 
     fun snapshots(): List<CameraEvidenceSnapshot> = CameraRouteSource.entries.mapNotNull { source ->
-        val evidence = current.values
-            .asSequence()
+        val evidence = current.values.asSequence()
             .filter { it.source == source }
             .sortedBy(::stableContentKey)
             .toList()
@@ -110,10 +110,7 @@ internal class CurrentTopologyEvidenceAccumulator(
         logicalParentId = logicalParentId?.value,
     )
 
-    private fun preferred(
-        existing: CameraMetadataEvidence,
-        candidate: CameraMetadataEvidence,
-    ): CameraMetadataEvidence {
+    private fun preferred(existing: CameraMetadataEvidence, candidate: CameraMetadataEvidence): CameraMetadataEvidence {
         val existingRichness = richness(existing)
         val candidateRichness = richness(candidate)
         return when {
@@ -169,11 +166,9 @@ internal class CurrentTopologyEvidenceAccumulator(
 }
 
 /**
- * One-shot, post-first-frame incremental reconciliation.
- *
- * Independent metadata providers execute concurrently on low-frequency background work. Every
- * credible bounded batch updates the current evidence set and may publish an improved immutable
- * topology immediately. CameraSessionController is never touched.
+ * Post-first-frame incremental reconciliation. The first automatic pass is one-shot, while explicit
+ * diagnostic reconciliations may be requested later. At most one pass runs at a time; concurrent
+ * requests are rejected rather than queued without bound.
  */
 internal class PostFirstFrameTopologyReconciler(
     private val environment: CameraEnvironmentFingerprint,
@@ -183,7 +178,9 @@ internal class PostFirstFrameTopologyReconciler(
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
-    private val started = AtomicBoolean(false)
+    private val armed = AtomicBoolean(false)
+    private val initialRequested = AtomicBoolean(false)
+    private val running = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
 
     init {
@@ -194,78 +191,93 @@ internal class PostFirstFrameTopologyReconciler(
     }
 
     fun startAfterFirstFrame() {
-        if (closed.get() || !started.compareAndSet(false, true)) return
-        scope.launch {
-            val previous = repository.topology.value
-            val permit = repository.beginReconciliation(environment)
-            val evidence = CurrentTopologyEvidenceAccumulator(environment)
-            val publicationMutex = Mutex()
-            val providerOutcomeMutex = Mutex()
-            var publishedAnyBatch = false
-            var completedProviders = 0
-            var failedProviders = 0
+        if (closed.get()) return
+        armed.set(true)
+        if (initialRequested.compareAndSet(false, true)) requestReconciliation()
+    }
 
-            suspend fun publishBatch(batch: List<CameraEvidenceSnapshot>) {
-                if (closed.get()) return
-                publicationMutex.withLock {
-                    if (closed.get()) return@withLock
-                    when (evidence.merge(batch)) {
-                        EvidenceMergeResult.REJECTED -> {
-                            throw IllegalArgumentException("Advertised evidence batch exceeds bounds or environment")
-                        }
-                        EvidenceMergeResult.UNCHANGED -> return@withLock
-                        EvidenceMergeResult.CHANGED -> Unit
+    fun requestReconciliation(onFinished: () -> Unit = {}): ReconciliationRequestResult {
+        if (closed.get()) return ReconciliationRequestResult.CLOSED
+        if (!armed.get()) return ReconciliationRequestResult.NOT_ARMED
+        if (!running.compareAndSet(false, true)) return ReconciliationRequestResult.ALREADY_RUNNING
+        scope.launch {
+            try {
+                reconcileOnce()
+            } finally {
+                running.set(false)
+                onFinished()
+            }
+        }
+        return ReconciliationRequestResult.STARTED
+    }
+
+    fun isRunning(): Boolean = running.get()
+
+    private suspend fun reconcileOnce() {
+        val previous = repository.topology.value
+        val permit = repository.beginReconciliation(environment)
+        val evidence = CurrentTopologyEvidenceAccumulator(environment)
+        val publicationMutex = Mutex()
+        val providerOutcomeMutex = Mutex()
+        var publishedAnyBatch = false
+        var completedProviders = 0
+        var failedProviders = 0
+
+        suspend fun publishBatch(batch: List<CameraEvidenceSnapshot>) {
+            if (closed.get()) return
+            publicationMutex.withLock {
+                if (closed.get()) return@withLock
+                when (evidence.merge(batch)) {
+                    EvidenceMergeResult.REJECTED -> {
+                        throw IllegalArgumentException("Advertised evidence batch exceeds bounds or environment")
                     }
-                    val resolved = try {
-                        CameraTopologyResolver.resolve(
-                            environment = environment,
-                            snapshots = evidence.snapshots(),
-                            generatedAtElapsedRealtimeNs = clockNanos().coerceAtLeast(0L),
-                            previousTrustedTopology = previous,
-                        )
+                    EvidenceMergeResult.UNCHANGED -> return@withLock
+                    EvidenceMergeResult.CHANGED -> Unit
+                }
+                val resolved = try {
+                    CameraTopologyResolver.resolve(
+                        environment = environment,
+                        snapshots = evidence.snapshots(),
+                        generatedAtElapsedRealtimeNs = clockNanos().coerceAtLeast(0L),
+                        previousTrustedTopology = previous,
+                    )
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: IllegalArgumentException) {
+                    throw IllegalArgumentException("Current advertised evidence cannot be reconciled")
+                }
+                if (!closed.get() && repository.publish(resolved, permit)) publishedAnyBatch = true
+            }
+        }
+
+        coroutineScope {
+            providers.forEach { provider ->
+                launch {
+                    try {
+                        provider.collect(::publishBatch)
+                        providerOutcomeMutex.withLock { completedProviders += 1 }
                     } catch (cancelled: CancellationException) {
                         throw cancelled
-                    } catch (_: IllegalArgumentException) {
-                        throw IllegalArgumentException("Current advertised evidence cannot be reconciled")
-                    }
-                    if (!closed.get() && repository.publish(resolved, permit)) publishedAnyBatch = true
-                }
-            }
-
-            coroutineScope {
-                providers.forEach { provider ->
-                    launch {
-                        try {
-                            provider.collect(::publishBatch)
-                            providerOutcomeMutex.withLock { completedProviders += 1 }
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (_: Throwable) {
-                            providerOutcomeMutex.withLock { failedProviders += 1 }
-                        }
+                    } catch (_: Throwable) {
+                        providerOutcomeMutex.withLock { failedProviders += 1 }
                     }
                 }
             }
-
-            if (closed.get() || publishedAnyBatch) return@launch
-            val allProvidersCompletedSuccessfully = providerOutcomeMutex.withLock {
-                completedProviders == providers.size && failedProviders == 0
-            }
-            if (!allProvidersCompletedSuccessfully) {
-                // A temporary backend failure is absence of evidence, not proof that cached lenses vanished.
-                return@launch
-            }
-
-            // Only a successful full reconciliation in which every provider completed and all proved
-            // empty may intentionally clear a compatible previous topology.
-            val empty = CameraTopologyResolver.resolve(
-                environment = environment,
-                snapshots = emptyList(),
-                generatedAtElapsedRealtimeNs = clockNanos().coerceAtLeast(0L),
-                previousTrustedTopology = previous,
-            )
-            if (!closed.get()) repository.publish(empty, permit)
         }
+
+        if (closed.get() || publishedAnyBatch) return
+        val allProvidersCompletedSuccessfully = providerOutcomeMutex.withLock {
+            completedProviders == providers.size && failedProviders == 0
+        }
+        if (!allProvidersCompletedSuccessfully) return
+
+        val empty = CameraTopologyResolver.resolve(
+            environment = environment,
+            snapshots = emptyList(),
+            generatedAtElapsedRealtimeNs = clockNanos().coerceAtLeast(0L),
+            previousTrustedTopology = previous,
+        )
+        if (!closed.get()) repository.publish(empty, permit)
     }
 
     override fun close() {

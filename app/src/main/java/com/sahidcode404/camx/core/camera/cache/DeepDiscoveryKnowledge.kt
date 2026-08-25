@@ -58,6 +58,11 @@ internal class DeepDiscoveryKnowledgeRepository(
 
     fun current(): DeepDiscoveryKnowledge? = memory.get()
 
+    /** Diagnostic cache reset only; callers serialize this against discovery reconciliation. */
+    fun forgetCurrent() {
+        memory.set(null)
+    }
+
     suspend fun load(environment: CameraEnvironmentFingerprint): CacheRead<DeepDiscoveryKnowledge> =
         mutationMutex.withLock {
             memory.set(memory.get()?.takeIf { it.environment == environment })

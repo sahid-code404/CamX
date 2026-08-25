@@ -3,9 +3,16 @@ package com.sahidcode404.camx.core.camera.bootstrap
 import android.content.Context
 import android.hardware.camera2.CameraManager
 import android.os.Build
+import android.os.SystemClock
 import com.sahidcode404.camx.core.camera.cache.AtomicCameraCachePersistence
 import com.sahidcode404.camx.core.camera.cache.AtomicDeepDiscoveryKnowledgePersistence
 import com.sahidcode404.camx.core.camera.cache.DeepDiscoveryKnowledgeRepository
+import com.sahidcode404.camx.core.camera.cache.DiscoveryCacheResetResult
+import com.sahidcode404.camx.core.camera.diagnostics.AuxDiscoveryAuditTracker
+import com.sahidcode404.camx.core.camera.diagnostics.AuxHardwareAudit
+import com.sahidcode404.camx.core.camera.diagnostics.AuxHardwareAuditSnapshot
+import com.sahidcode404.camx.core.camera.diagnostics.DeepRescanCoordinator
+import com.sahidcode404.camx.core.camera.diagnostics.DeepRescanRequestResult
 import com.sahidcode404.camx.core.camera.discovery.AndroidAdvertisedCameraEvidenceBackend
 import com.sahidcode404.camx.core.camera.discovery.AndroidFirstInstallSeedDiscovery
 import com.sahidcode404.camx.core.camera.discovery.DiscoveryDepth
@@ -13,8 +20,12 @@ import com.sahidcode404.camx.core.camera.discovery.DiscoveryMetadataBudget
 import com.sahidcode404.camx.core.camera.discovery.JavaDeepControlCertifier
 import com.sahidcode404.camx.core.camera.discovery.NdkAdvertisedCameraEvidenceBackend
 import com.sahidcode404.camx.core.camera.discovery.NdkDeepAuxDiscoveryBackend
+import com.sahidcode404.camx.core.camera.lens.CameraLensProjection
+import com.sahidcode404.camx.core.camera.lens.CameraLensProjectionInput
+import com.sahidcode404.camx.core.camera.lens.CameraLensUiProjector
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
+import com.sahidcode404.camx.core.camera.model.CameraProfileFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraRoute
 import com.sahidcode404.camx.core.camera.model.CameraRouteSource
 import com.sahidcode404.camx.core.camera.model.IntSize
@@ -25,6 +36,7 @@ import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceLease
 import com.sahidcode404.camx.core.camera.session.CameraEngineState
 import com.sahidcode404.camx.core.camera.session.CameraSessionController
+import com.sahidcode404.camx.core.camera.topology.AdvertisedTopologyEvidenceProvider
 import com.sahidcode404.camx.core.camera.topology.CameraTopologyRepository
 import com.sahidcode404.camx.core.camera.topology.JavaDeepCertificationSource
 import com.sahidcode404.camx.core.camera.topology.JavaLevel2EvidenceSource
@@ -34,12 +46,14 @@ import com.sahidcode404.camx.core.camera.topology.PostFirstFrameAuxDiscoveryOrch
 import com.sahidcode404.camx.core.camera.topology.PostFirstFrameTopologyReconciler
 import com.sahidcode404.camx.core.settings.SettingsSnapshot
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -79,32 +93,68 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     )
     private val surfaceBridge = AndroidVisiblePreviewSurfaceBridge()
     private val topologySignalScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val explicitDeepRescanRequested = AtomicBoolean(false)
+    private val firstFrameVerified = AtomicBoolean(false)
+    private val structurallyFailedAuditProfiles = LinkedHashSet<CameraProfileFingerprint>()
+    private val auditTracker = AuxDiscoveryAuditTracker(SystemClock::elapsedRealtimeNanos)
+    private val mutableAuxAudit = MutableStateFlow(AuxHardwareAuditSnapshot())
 
     val topologyRepository = CameraTopologyRepository()
+    val auxAudit: StateFlow<AuxHardwareAuditSnapshot> = mutableAuxAudit.asStateFlow()
 
     private val auxDiscoveryOrchestrator = PostFirstFrameAuxDiscoveryOrchestrator(
         environment = environment,
         javaLevel2 = JavaLevel2EvidenceSource { emit ->
-            javaAdvertisedDiscovery.discoverIncrementally(DiscoveryDepth.ADVERTISED, emit)
+            val report = javaAdvertisedDiscovery.discoverIncrementally(DiscoveryDepth.ADVERTISED) { batch ->
+                auditTracker.onJavaAdvertised(batch)
+                emit(batch)
+            }
+            auditTracker.onJavaAdvertised(report)
+            report
         },
         ndkLevel2 = NdkLevel2EvidenceSource {
-            metadataBudget.withNativeMetadata {
+            val report = metadataBudget.withNativeMetadata {
                 ndkAdvertisedDiscovery.discoverReport(DiscoveryDepth.ADVERTISED)
             }
+            auditTracker.onNdkAdvertised(report)
+            report
         },
         ndkDeep = NdkDeepEvidenceSource { request, emit ->
-            ndkDeepDiscovery.discoverIncrementally(request, emit)
+            val report = ndkDeepDiscovery.discoverIncrementally(request) { batch ->
+                auditTracker.onNdkDeep(batch)
+                emit(batch)
+            }
+            auditTracker.onNdkDeep(report)
+            report
         },
         javaDeep = JavaDeepCertificationSource { outcomes, existingJavaEvidence, emit ->
-            javaDeepCertifier.certifyIncrementally(outcomes, existingJavaEvidence, emit)
+            val report = javaDeepCertifier.certifyIncrementally(outcomes, existingJavaEvidence) { batch ->
+                auditTracker.onJavaDeep(batch)
+                emit(batch)
+            }
+            auditTracker.onJavaDeep(report)
+            report
         },
         deepKnowledge = deepKnowledgeRepository,
+        explicitDeepRescan = { explicitDeepRescanRequested.get() },
     )
+
+    private val observedAuxProvider = AdvertisedTopologyEvidenceProvider { emit ->
+        auditTracker.beginRun(
+            selectableCount = coordinator.lensItems.value.size,
+            publicationCount = topologyRepository.publicationCount(),
+        )
+        try {
+            auxDiscoveryOrchestrator.collect(emit)
+        } finally {
+            auditTracker.finishRun()
+        }
+    }
 
     private val topologyReconciler = PostFirstFrameTopologyReconciler(
         environment = environment,
         repository = topologyRepository,
-        providers = listOf(auxDiscoveryOrchestrator),
+        providers = listOf(observedAuxProvider),
     )
 
     val coordinator = VisiblePreviewCoordinator(
@@ -117,12 +167,30 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         settings = { SettingsSnapshot() },
     )
 
+    private val deepRescanCoordinator = DeepRescanCoordinator(
+        firstFrameVerified = { firstFrameVerified.get() },
+        reconciliationRunning = topologyReconciler::isRunning,
+        setExplicitDeepRescan = explicitDeepRescanRequested::set,
+        requestReconciliation = topologyReconciler::requestReconciliation,
+        resetCaches = {
+            val hadDeepMemory = deepKnowledgeRepository.current() != null
+            val disk = cachePersistence.resetDiscoveryCaches()
+            if (disk != DiscoveryCacheResetResult.FAILED) deepKnowledgeRepository.forgetCurrent()
+            if (disk == DiscoveryCacheResetResult.NOTHING_TO_RESET && hadDeepMemory) {
+                DiscoveryCacheResetResult.SUCCESS
+            } else {
+                disk
+            }
+        },
+    )
+
     init {
         // Only a verified first frame arms Level-2/Level-4 discovery. Metadata work is independent of
         // the camera dispatcher and each topology improvement only refreshes lens availability.
         topologySignalScope.launch {
             coordinator.uiState.collect { state ->
                 if (state is VisiblePreviewUiState.Previewing && state.firstFrameVerified) {
+                    if (firstFrameVerified.compareAndSet(false, true)) auditTracker.markFirstFrame()
                     topologyReconciler.startAfterFirstFrame()
                 }
             }
@@ -131,13 +199,56 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         // reports the exact first frame for the user's real selection.
         topologySignalScope.launch {
             controller.state.collect { state ->
-                val previewing = state as? CameraEngineState.Previewing ?: return@collect
-                if (!previewing.firstFrameVerified) return@collect
-                val topology = topologyRepository.topology.value ?: return@collect
-                val route = topology.routes.firstOrNull { it.id == previewing.selection.routeId } ?: return@collect
-                if (CameraRouteSource.JAVA_DEEP_PROBED !in route.sources) return@collect
-                deepKnowledgeRepository.markSessionVerified(environment, route.openCameraId.value)
+                if (state is CameraEngineState.StructuralError) {
+                    synchronized(structurallyFailedAuditProfiles) {
+                        structurallyFailedAuditProfiles += state.selection.profileFingerprint
+                    }
+                }
+                val previewing = state as? CameraEngineState.Previewing
+                if (previewing?.firstFrameVerified == true) {
+                    val topology = topologyRepository.topology.value
+                    val route = topology?.routes?.firstOrNull { it.id == previewing.selection.routeId }
+                    if (route != null && CameraRouteSource.JAVA_DEEP_PROBED in route.sources) {
+                        deepKnowledgeRepository.markSessionVerified(environment, route.openCameraId.value)
+                    }
+                }
+                refreshAudit()
             }
+        }
+        topologySignalScope.launch {
+            topologyRepository.topology.collect { snapshot ->
+                if (snapshot != null) {
+                    val validProfiles = snapshot.canonicalLenses.asSequence()
+                        .flatMap { it.profiles.asSequence() }
+                        .map { it.fingerprint }
+                        .toSet()
+                    synchronized(structurallyFailedAuditProfiles) {
+                        structurallyFailedAuditProfiles.retainAll(validProfiles)
+                    }
+                }
+                val projection = currentAuditProjection()
+                auditTracker.onTopologyState(projection.items.size, topologyRepository.publicationCount())
+                refreshAudit(projection)
+            }
+        }
+        topologySignalScope.launch {
+            coordinator.lensItems.collect { refreshAudit() }
+        }
+        topologySignalScope.launch {
+            auditTracker.changes.collect { refreshAudit() }
+        }
+    }
+
+    fun requestDeepRescan(): DeepRescanRequestResult {
+        val result = deepRescanCoordinator.requestDeepRescan()
+        auditTracker.recordDeepRescanResult(result)
+        return result
+    }
+
+    fun resetDiscoveryCache() {
+        topologySignalScope.launch {
+            val result = deepRescanCoordinator.resetDiscoveryCache()
+            auditTracker.recordCacheResetResult(result)
         }
     }
 
@@ -158,6 +269,29 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         topologyReconciler.close()
         surfaceBridge.close()
         coordinator.requestShutdown()
+    }
+
+    private fun refreshAudit(projection: CameraLensProjection = currentAuditProjection()) {
+        mutableAuxAudit.value = AuxHardwareAudit.build(
+            topology = topologyRepository.topology.value,
+            projection = projection,
+            tracker = auditTracker.snapshot(),
+        )
+    }
+
+    private fun currentAuditProjection(): CameraLensProjection {
+        val status = coordinator.lensItems.value.associate { it.canonicalFingerprint to it.status }
+        val failed = synchronized(structurallyFailedAuditProfiles) { structurallyFailedAuditProfiles.toSet() }
+        val active = (controller.state.value as? CameraEngineState.Previewing)?.selection
+        return CameraLensUiProjector.project(
+            CameraLensProjectionInput(
+                topology = topologyRepository.topology.value,
+                runtimeApiLevel = Build.VERSION.SDK_INT,
+                activeSelection = active,
+                statusByLens = status,
+                structurallyFailedProfiles = failed,
+            ),
+        )
     }
 
     private fun runtimeEnvironmentFingerprint(): CameraEnvironmentFingerprint {
@@ -188,7 +322,6 @@ internal class AndroidVisiblePreviewSurfaceBridge : VisiblePreviewSurfacePort, A
         }
     }
 
-    /** Returns true only when the destroyed identity was current. */
     fun invalidate(identity: PreviewSurfaceIdentity): Boolean {
         val current = currentBinding.value ?: return false
         if (current.identity != identity) return false

@@ -190,16 +190,48 @@ class VisiblePreviewLensSwitchTest {
     }
 
     @Test
-    fun surfaceInvalidationDuringBlockedSwitchRestartsOnlyFreshSelectedGeneration() {
+    fun destroyedSurfaceDuringBlockedSwitchRejectsOldCompletionAndUsesNewSurface() {
         val fixture = fixture()
         fixture.startAndVerifyMain()
         fixture.surface.blockNextAcquire()
         val starts = fixture.session.starts.size
+
         fixture.coordinator.selectLens(lens("ultra"))
-        fixture.coordinator.surfaceInvalidated(fixture.surface.identity)
+        assertTrue(fixture.surface.blockedAcquireInFlight())
+        val oldIdentity = fixture.surface.identity
+        fixture.surface.invalidate(oldIdentity)
+        fixture.coordinator.surfaceInvalidated(oldIdentity)
+
         fixture.surface.releaseBlockedAcquire()
+        assertEquals(starts, fixture.session.starts.size)
+
+        val newIdentity = PreviewSurfaceIdentity(oldIdentity.value + 1L)
+        fixture.surface.publish(newIdentity)
         assertEquals(starts + 1, fixture.session.starts.size)
         assertEquals(CameraRouteId("route:ultra"), fixture.session.starts.last().route.id)
+        assertEquals(newIdentity, fixture.session.starts.last().lease.identity)
+
+        fixture.session.verifyCurrent()
+        assertEquals(LensTestStatus.VERIFIED, fixture.status("ultra"))
+        assertTrue(fixture.item("ultra").selected)
+    }
+
+    @Test
+    fun publishedReplacementThenPreviousInvalidationRestartsSelectedLensOnceOnNewSurface() {
+        val fixture = fixture()
+        fixture.startAndVerifyMain()
+        fixture.coordinator.selectLens(lens("ultra"))
+        fixture.session.verifyCurrent()
+        val starts = fixture.session.starts.size
+        val oldIdentity = fixture.surface.identity
+        val newIdentity = PreviewSurfaceIdentity(oldIdentity.value + 1L)
+
+        fixture.surface.publishReplacement(newIdentity)
+        fixture.coordinator.surfaceInvalidated(oldIdentity)
+
+        assertEquals(starts + 1, fixture.session.starts.size)
+        assertEquals(CameraRouteId("route:ultra"), fixture.session.starts.last().route.id)
+        assertEquals(newIdentity, fixture.session.starts.last().lease.identity)
     }
 
     @Test
@@ -296,26 +328,68 @@ class VisiblePreviewLensSwitchTest {
     }
 
     private class FakeSurfacePort(private val events: MutableList<String>) : VisiblePreviewSurfacePort {
-        val identity = PreviewSurfaceIdentity(42L)
-        private var blocked: CompletableDeferred<VisiblePreviewLease>? = null
+        private var currentIdentity: PreviewSurfaceIdentity? = PreviewSurfaceIdentity(42L)
+        private var blockedNextAcquire: CompletableDeferred<VisiblePreviewLease>? = null
+        private var staleBlockedAcquire: CompletableDeferred<VisiblePreviewLease>? = null
+        private var staleBlockedIdentity: PreviewSurfaceIdentity? = null
+        private var waitForNewSurface: CompletableDeferred<VisiblePreviewLease>? = null
         var lastBufferSize: IntSize? = null
 
+        val identity: PreviewSurfaceIdentity
+            get() = checkNotNull(currentIdentity) { "No current fake preview surface" }
+
         override suspend fun awaitSurface(): VisiblePreviewLease {
-            events += "await:${identity.value}"
-            val wait = blocked
-            if (wait != null) return wait.await()
-            return FakeLease(identity)
+            val current = currentIdentity
+            events += "await:${current?.value ?: "none"}"
+            val blocked = blockedNextAcquire
+            if (blocked != null) {
+                blockedNextAcquire = null
+                staleBlockedAcquire = blocked
+                staleBlockedIdentity = current
+                return blocked.await()
+            }
+            if (current != null) return FakeLease(current)
+            val waiter = waitForNewSurface ?: CompletableDeferred<VisiblePreviewLease>().also {
+                waitForNewSurface = it
+            }
+            return waiter.await()
         }
 
         override suspend fun awaitBufferSize(identity: PreviewSurfaceIdentity, size: IntSize) {
             lastBufferSize = size
         }
 
-        fun blockNextAcquire() { blocked = CompletableDeferred() }
+        fun blockNextAcquire() {
+            check(blockedNextAcquire == null && staleBlockedAcquire == null) {
+                "Only one fake blocked surface acquisition is supported"
+            }
+            blockedNextAcquire = CompletableDeferred()
+        }
+
+        fun blockedAcquireInFlight(): Boolean = staleBlockedAcquire != null
+
+        fun invalidate(identity: PreviewSurfaceIdentity) {
+            if (currentIdentity == identity) currentIdentity = null
+        }
+
+        fun publish(identity: PreviewSurfaceIdentity) {
+            currentIdentity = identity
+            val waiter = waitForNewSurface ?: return
+            waitForNewSurface = null
+            waiter.complete(FakeLease(identity))
+        }
+
+        fun publishReplacement(newIdentity: PreviewSurfaceIdentity) {
+            publish(newIdentity)
+        }
+
         fun releaseBlockedAcquire() {
-            val wait = blocked ?: return
-            blocked = null
-            wait.complete(FakeLease(identity))
+            val wait = staleBlockedAcquire ?: blockedNextAcquire ?: return
+            val acquiredIdentity = staleBlockedIdentity ?: currentIdentity
+            blockedNextAcquire = null
+            staleBlockedAcquire = null
+            staleBlockedIdentity = null
+            wait.complete(FakeLease(checkNotNull(acquiredIdentity) { "Blocked acquire had no surface identity" }))
         }
     }
 

@@ -80,6 +80,7 @@ class PostFirstFrameTopologyReconcilerTest {
                     releaseFirst.complete(Unit)
                 },
             ),
+            clockNanos = { 100L },
             dispatcher = StandardTestDispatcher(testScheduler),
         )
 

@@ -1,5 +1,6 @@
 package com.sahidcode404.camx.core.camera.bootstrap
 
+import com.sahidcode404.camx.core.camera.diagnostics.LensSwitchDiagnostics
 import com.sahidcode404.camx.core.camera.diagnostics.SafeBaselineConfigurationRejected
 import com.sahidcode404.camx.core.camera.lens.LensTestStatus
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
@@ -36,7 +37,7 @@ import org.junit.Test
 
 class VisiblePreviewProfileFailoverTest {
     @Test
-    fun `structural profile A failure attempts B in same canonical and B first frame verifies lens`() {
+    fun `structural profile A failure uses same canonical planner without transient retry`() {
         val fixture = fixture()
         fixture.startMain()
         fixture.coordinator.selectLens(AUX)
@@ -49,6 +50,8 @@ class VisiblePreviewProfileFailoverTest {
         )
         assertEquals(CameraRouteId("aux-deep"), fixture.session.starts.last().route.id)
         assertEquals(2, fixture.session.starts.count { it.selection.canonicalLensFingerprint == AUX })
+        assertEquals(0L, fixture.diagnostics.value.transientRetryCount)
+        assertEquals(0L, fixture.diagnostics.value.fallbackToLastVerifiedCount)
 
         fixture.session.verifyCurrent()
         val item = fixture.coordinator.lensItems.value.single { it.canonicalFingerprint == AUX }
@@ -57,7 +60,7 @@ class VisiblePreviewProfileFailoverTest {
     }
 
     @Test
-    fun `second structural failure stops without A B A loop`() {
+    fun `second structural failure stops without transient retry fallback or A B A loop`() {
         val fixture = fixture()
         fixture.startMain()
         fixture.coordinator.selectLens(AUX)
@@ -69,6 +72,8 @@ class VisiblePreviewProfileFailoverTest {
         fixture.session.stateFlow.value = CameraEngineState.StructuralError(b, SafeBaselineConfigurationRejected)
 
         assertEquals(startsBeforeSecondFailure, fixture.session.starts.size)
+        assertEquals(0L, fixture.diagnostics.value.transientRetryCount)
+        assertEquals(0L, fixture.diagnostics.value.fallbackToLastVerifiedCount)
         assertEquals(LensTestStatus.FAILED, fixture.coordinator.lensItems.value.single { it.canonicalFingerprint == AUX }.status)
     }
 
@@ -120,6 +125,7 @@ class VisiblePreviewProfileFailoverTest {
     private data class Fixture(
         val coordinator: VisiblePreviewCoordinator,
         val session: FakeSession,
+        val diagnostics: MutableStateFlow<LensSwitchDiagnostics>,
     ) {
         fun startMain() {
             coordinator.setPermission(true)
@@ -132,6 +138,7 @@ class VisiblePreviewProfileFailoverTest {
         val topology = topology()
         val main = topology.routes.single { it.id == CameraRouteId("main") }
         val session = FakeSession()
+        val diagnostics = MutableStateFlow(LensSwitchDiagnostics())
         val coordinator = VisiblePreviewCoordinator(
             seedSource = VisiblePreviewSeedSource { main },
             capabilitySource = SelectedSeedPreviewCapabilitySource { route ->
@@ -144,9 +151,10 @@ class VisiblePreviewProfileFailoverTest {
             topology = MutableStateFlow(topology),
             runtimeApiLevel = 35,
             settings = { SettingsSnapshot() },
+            switchDiagnosticsSink = { diagnostics.value = it },
             dispatcher = Dispatchers.Unconfined,
         )
-        return Fixture(coordinator, session)
+        return Fixture(coordinator, session, diagnostics)
     }
 
     private fun topology(): CameraTopologySnapshot {

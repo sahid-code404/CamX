@@ -174,7 +174,7 @@ internal object NdkDeepNativeBridge {
     private external fun nativeCollectCandidates(androidApi: Int, candidateIds: Array<String>): ByteArray?
 }
 
-/** Metadata-only wave executor. No CameraDevice, session, request, or frame probe exists here. */
+/** Metadata-only wave executor. No owned camera resources, session work, requests, or frame probes exist here. */
 internal class NdkDeepAuxDiscoveryBackend(
     private val environment: CameraEnvironmentFingerprint,
     private val metadataBudget: DiscoveryMetadataBudget,

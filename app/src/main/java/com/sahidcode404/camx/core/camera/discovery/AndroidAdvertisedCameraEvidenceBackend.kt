@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.util.Range
 import android.util.Size
 import android.view.SurfaceHolder
+import com.sahidcode404.camx.core.camera.concurrency.boundedCameraMap
 import com.sahidcode404.camx.core.camera.model.CameraCapabilities
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraFpsCapability
@@ -22,9 +23,6 @@ import com.sahidcode404.camx.core.camera.model.PreviewStreamType
 import java.security.MessageDigest
 import java.util.Collections
 import kotlin.coroutines.coroutineContext
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 
 const val AUX_MAX_PUBLIC_IDS = 64
@@ -149,24 +147,20 @@ internal class AndroidAdvertisedCameraEvidenceBackend(
 
         for (chunk in orderedIds.chunked(metadataBudget.javaLanes)) {
             coroutineContext.ensureActive()
-            val results = coroutineScope {
-                chunk.map { rawId ->
-                    async {
-                        if (rawId.isBlank()) {
-                            MinimalReadResult(
-                                rawId,
-                                null,
-                                JavaAdvertisedEvidenceFailure(
-                                    JavaAdvertisedEvidenceFailureKind.INVALID_PUBLIC_ID,
-                                    transportId = rawId,
-                                ),
-                            )
-                        } else {
-                            val read = readBounded(rawId, physical = false, minimal = true)
-                            MinimalReadResult(rawId, read.record, read.failure)
-                        }
-                    }
-                }.awaitAll()
+            val results = boundedCameraMap(chunk, metadataBudget.javaLanes) { rawId ->
+                if (rawId.isBlank()) {
+                    MinimalReadResult(
+                        rawId,
+                        null,
+                        JavaAdvertisedEvidenceFailure(
+                            JavaAdvertisedEvidenceFailureKind.INVALID_PUBLIC_ID,
+                            transportId = rawId,
+                        ),
+                    )
+                } else {
+                    val read = readBounded(rawId, physical = false, minimal = true)
+                    MinimalReadResult(rawId, read.record, read.failure)
+                }
             }
             val publicBatch = ArrayList<CameraMetadataEvidence>()
             val physicalBatch = ArrayList<CameraMetadataEvidence>()
@@ -227,17 +221,13 @@ internal class AndroidAdvertisedCameraEvidenceBackend(
         // Less urgent metadata comes only after Stage-A candidate/relationship publication.
         for (chunk in enrichmentTargets.chunked(metadataBudget.javaLanes)) {
             coroutineContext.ensureActive()
-            val results = coroutineScope {
-                chunk.map { target ->
-                    async {
-                        val read = readBounded(
-                            id = target.queryId,
-                            physical = target.physicalId != null,
-                            minimal = false,
-                        )
-                        EnrichmentReadResult(target, read.record, read.failure)
-                    }
-                }.awaitAll()
+            val results = boundedCameraMap(chunk, metadataBudget.javaLanes) { target ->
+                val read = readBounded(
+                    id = target.queryId,
+                    physical = target.physicalId != null,
+                    minimal = false,
+                )
+                EnrichmentReadResult(target, read.record, read.failure)
             }
             val publicBatch = ArrayList<CameraMetadataEvidence>()
             val physicalBatch = ArrayList<CameraMetadataEvidence>()

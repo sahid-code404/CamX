@@ -133,7 +133,10 @@ internal class HttpsDevelopmentHttpClient : DevelopmentHttpClient {
                 throw DevelopmentNetworkException(UpdateFailureCode.HTTP_ERROR)
             }
 
-            val length = connection.contentLengthLong.takeIf { it >= 0L }
+            val length = connection.getHeaderField("Content-Length")
+                ?.trim()
+                ?.toLongOrNull()
+                ?.takeIf { it >= 0L }
             val stream = try {
                 BufferedInputStream(connection.inputStream)
             } catch (error: Exception) {

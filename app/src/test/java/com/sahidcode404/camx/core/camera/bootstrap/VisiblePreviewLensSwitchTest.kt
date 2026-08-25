@@ -45,9 +45,7 @@ class VisiblePreviewLensSwitchTest {
         fixture.startAndVerifyMain()
         val starts = fixture.session.starts.size
         val pauses = fixture.session.pauseCalls
-
         fixture.coordinator.selectLens(lens("main"))
-
         assertEquals(starts, fixture.session.starts.size)
         assertEquals(pauses, fixture.session.pauseCalls)
     }
@@ -58,9 +56,7 @@ class VisiblePreviewLensSwitchTest {
         fixture.startAndVerifyMain()
         fixture.events.clear()
         val identity = fixture.surface.identity
-
         fixture.coordinator.selectLens(lens("ultra"))
-
         assertEquals("pause", fixture.events[0])
         assertEquals("await:${identity.value}", fixture.events[1])
         assertEquals("start:route:ultra", fixture.events.last())
@@ -74,9 +70,7 @@ class VisiblePreviewLensSwitchTest {
         fixture.startAndVerifyMain()
         fixture.coordinator.selectLens(lens("ultra"))
         fixture.session.verifyCurrent()
-
         fixture.coordinator.selectLens(lens("main"))
-
         assertEquals(CameraRouteId("route:main"), fixture.session.starts.last().route.id)
     }
 
@@ -84,9 +78,7 @@ class VisiblePreviewLensSwitchTest {
     fun mainToTeleUsesTeleAdvertisedConfiguration() {
         val fixture = fixture()
         fixture.startAndVerifyMain()
-
         fixture.coordinator.selectLens(lens("tele"))
-
         val start = fixture.session.starts.last()
         assertEquals(CameraRouteId("route:tele"), start.route.id)
         assertEquals(IntSize(1920, 1080), start.configuration.size)
@@ -97,9 +89,7 @@ class VisiblePreviewLensSwitchTest {
     fun rearToFrontUsesFrontFacingGeometryAndMirrorPreference() {
         val fixture = fixture()
         fixture.startAndVerifyMain()
-
         fixture.coordinator.selectLens(lens("front"))
-
         assertEquals(CameraRouteId("route:front"), fixture.session.starts.last().route.id)
         assertTrue(checkNotNull(fixture.coordinator.renderSpec.value).geometry.mirrorHorizontally)
     }
@@ -110,9 +100,7 @@ class VisiblePreviewLensSwitchTest {
         fixture.startAndVerifyMain()
         fixture.coordinator.selectLens(lens("front"))
         fixture.session.verifyCurrent()
-
         fixture.coordinator.selectLens(lens("main"))
-
         assertFalse(checkNotNull(fixture.coordinator.renderSpec.value).geometry.mirrorHorizontally)
     }
 
@@ -120,13 +108,11 @@ class VisiblePreviewLensSwitchTest {
     fun logicalToPhysicalAndPhysicalAToBKeepExactRouteTargets() {
         val fixture = fixture()
         fixture.startAndVerifyMain()
-
         fixture.coordinator.selectLens(lens("physicalA"))
         val a = fixture.session.starts.last().route
         fixture.session.verifyCurrent()
         fixture.coordinator.selectLens(lens("physicalB"))
         val b = fixture.session.starts.last().route
-
         assertEquals(CameraTransportId("logical-parent"), a.openCameraId)
         assertEquals(PhysicalCameraId("member-a"), a.physicalCameraId)
         assertEquals(CameraTransportId("logical-parent"), b.openCameraId)
@@ -140,16 +126,13 @@ class VisiblePreviewLensSwitchTest {
         fixture.startAndVerifyMain()
         fixture.coordinator.selectLens(lens("tele"))
         val selection = fixture.session.starts.last().selection
-
         fixture.session.stateFlow.value = CameraEngineState.ConfiguringPreview(
             selection,
             com.sahidcode404.camx.core.camera.model.PreviewConfigurationAttemptKind.REQUESTED,
         )
         assertEquals(LensTestStatus.OPENING, fixture.status("tele"))
-
         fixture.session.stateFlow.value = CameraEngineState.Previewing(selection, false)
         assertEquals(LensTestStatus.OPENING, fixture.status("tele"))
-
         fixture.session.stateFlow.value = CameraEngineState.Previewing(selection, true)
         assertEquals(LensTestStatus.VERIFIED, fixture.status("tele"))
         assertTrue(fixture.item("tele").selected)
@@ -161,9 +144,7 @@ class VisiblePreviewLensSwitchTest {
         fixture.startAndVerifyMain()
         fixture.coordinator.selectLens(lens("tele"))
         val teleSelection = fixture.session.starts.last().selection
-
         fixture.session.stateFlow.value = CameraEngineState.RecoverableError(teleSelection, CameraInUse)
-
         assertEquals(LensTestStatus.FAILED, fixture.status("tele"))
         assertNotEquals(LensTestStatus.FAILED, fixture.status("main"))
         val starts = fixture.session.starts.size
@@ -175,10 +156,8 @@ class VisiblePreviewLensSwitchTest {
     fun rapidAToBToCLeavesCAsCurrentStartedRoute() {
         val fixture = fixture()
         fixture.startAndVerifyMain()
-
         fixture.coordinator.selectLens(lens("ultra"))
         fixture.coordinator.selectLens(lens("tele"))
-
         assertEquals(CameraRouteId("route:tele"), fixture.session.starts.last().route.id)
         assertEquals(LensTestStatus.OPENING, fixture.status("tele"))
         assertNotEquals(LensTestStatus.VERIFIED, fixture.status("ultra"))
@@ -190,11 +169,9 @@ class VisiblePreviewLensSwitchTest {
         fixture.startAndVerifyMain()
         fixture.surface.blockNextAcquire()
         val starts = fixture.session.starts.size
-
         fixture.coordinator.selectLens(lens("tele"))
         fixture.coordinator.pause()
         fixture.surface.releaseBlockedAcquire()
-
         assertEquals(starts, fixture.session.starts.size)
         assertTrue(fixture.session.pauseCalls >= 2)
     }
@@ -207,25 +184,22 @@ class VisiblePreviewLensSwitchTest {
         fixture.session.verifyCurrent()
         fixture.coordinator.pause()
         val starts = fixture.session.starts.size
-
         fixture.coordinator.resume(DisplayRotation.ROTATION_0)
-
         assertEquals(starts + 1, fixture.session.starts.size)
         assertEquals(CameraRouteId("route:tele"), fixture.session.starts.last().route.id)
     }
 
     @Test
-    fun surfaceInvalidationDuringBlockedSwitchDoesNotCommitOldSwitchGeneration() {
+    fun surfaceInvalidationDuringBlockedSwitchRestartsOnlyFreshSelectedGeneration() {
         val fixture = fixture()
         fixture.startAndVerifyMain()
         fixture.surface.blockNextAcquire()
         val starts = fixture.session.starts.size
-
         fixture.coordinator.selectLens(lens("ultra"))
         fixture.coordinator.surfaceInvalidated(fixture.surface.identity)
         fixture.surface.releaseBlockedAcquire()
-
-        assertEquals(starts, fixture.session.starts.size)
+        assertEquals(starts + 1, fixture.session.starts.size)
+        assertEquals(CameraRouteId("route:ultra"), fixture.session.starts.last().route.id)
     }
 
     @Test
@@ -234,11 +208,9 @@ class VisiblePreviewLensSwitchTest {
         fixture.startAndVerifyMain()
         fixture.surface.blockNextAcquire()
         val starts = fixture.session.starts.size
-
         fixture.coordinator.selectLens(lens("ultra"))
         awaitUnit { fixture.coordinator.shutdownForTest() }
         fixture.surface.releaseBlockedAcquire()
-
         assertEquals(starts, fixture.session.starts.size)
         assertEquals(1, fixture.session.shutdownCalls)
     }
@@ -257,7 +229,6 @@ class VisiblePreviewLensSwitchTest {
             session.verifyCurrent()
             assertEquals(LensTestStatus.VERIFIED, status("main"))
         }
-
         fun item(name: String) = coordinator.lensItems.value.single { it.canonicalFingerprint == lens(name) }
         fun status(name: String) = item(name).status
     }
@@ -269,9 +240,7 @@ class VisiblePreviewLensSwitchTest {
         val configuration: PreviewConfiguration,
     )
 
-    private class FakeSessionPort(
-        private val events: MutableList<String>,
-    ) : VisiblePreviewSessionPort {
+    private class FakeSessionPort(private val events: MutableList<String>) : VisiblePreviewSessionPort {
         val stateFlow = MutableStateFlow<CameraEngineState>(CameraEngineState.WaitingForSurface(null))
         override val state: StateFlow<CameraEngineState> = stateFlow
         val starts = mutableListOf<StartCall>()
@@ -319,18 +288,14 @@ class VisiblePreviewLensSwitchTest {
         }
     }
 
-    private class FakeLease(
-        override val identity: PreviewSurfaceIdentity,
-    ) : VisiblePreviewLease {
+    private class FakeLease(override val identity: PreviewSurfaceIdentity) : VisiblePreviewLease {
         override val viewSize = IntSize(1080, 1920)
         override val bufferSize = IntSize(640, 480)
         var closed = false
         override fun close() { closed = true }
     }
 
-    private class FakeSurfacePort(
-        private val events: MutableList<String>,
-    ) : VisiblePreviewSurfacePort {
+    private class FakeSurfacePort(private val events: MutableList<String>) : VisiblePreviewSurfacePort {
         val identity = PreviewSurfaceIdentity(42L)
         private var blocked: CompletableDeferred<VisiblePreviewLease>? = null
         var lastBufferSize: IntSize? = null
@@ -346,10 +311,7 @@ class VisiblePreviewLensSwitchTest {
             lastBufferSize = size
         }
 
-        fun blockNextAcquire() {
-            blocked = CompletableDeferred()
-        }
-
+        fun blockNextAcquire() { blocked = CompletableDeferred() }
         fun releaseBlockedAcquire() {
             val wait = blocked ?: return
             blocked = null

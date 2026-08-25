@@ -173,6 +173,8 @@ data class NdkDeepEvidenceReport(
     val snapshot: CameraEvidenceSnapshot,
     val outcomes: List<DeepAuxCandidateOutcome>,
     val failures: List<NdkAdvertisedEvidenceFailure>,
+    /** Full bounded planner output for diagnostics; it does not change probe order or execution. */
+    val plannedCandidates: List<DeepAuxCandidate> = emptyList(),
 )
 
 internal object NdkDeepNativeBridge {
@@ -225,6 +227,7 @@ internal class NdkDeepAuxDiscoveryBackend(
                         snapshot = snapshot(emptyList()),
                         outcomes = immutableList(outcomes),
                         failures = emptyList(),
+                        plannedCandidates = plan.candidates,
                     )
                 } else {
                     val evidenceById = decoded.evidence.associateBy { it.transportId.value }
@@ -244,6 +247,7 @@ internal class NdkDeepAuxDiscoveryBackend(
                         snapshot = snapshot(decoded.evidence),
                         outcomes = immutableList(outcomes),
                         failures = immutableList(decoded.failures),
+                        plannedCandidates = plan.candidates,
                     )
                 }
                 report.snapshot.evidence.forEach { allEvidence[it.transportId.value] = it }
@@ -257,6 +261,7 @@ internal class NdkDeepAuxDiscoveryBackend(
             snapshot = snapshot(allEvidence.values.sortedBy { it.transportId.value }),
             outcomes = immutableList(allOutcomes),
             failures = immutableList(allFailures),
+            plannedCandidates = plan.candidates,
         )
     }
 

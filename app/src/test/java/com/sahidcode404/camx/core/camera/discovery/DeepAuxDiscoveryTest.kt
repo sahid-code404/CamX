@@ -11,6 +11,7 @@ import org.junit.Test
 
 class DeepAuxDiscoveryTest {
     private val environment = CameraEnvironmentFingerprint("deep-aux-test")
+    private val testClock = { 42L }
 
     @Test
     fun `verified then successful then cached exact ids lead hot wave`() {
@@ -110,7 +111,7 @@ class DeepAuxDiscoveryTest {
             environment = environment,
             metadataBudget = DiscoveryMetadataBudget(),
             deviceApi = { 24 },
-            clockNanos = { 42L },
+            clockNanos = testClock,
             rawCollector = { _, ids ->
                 val requested = ids.toList()
                 calls += requested
@@ -147,6 +148,7 @@ class DeepAuxDiscoveryTest {
             environment = environment,
             metadataBudget = DiscoveryMetadataBudget(),
             deviceApi = { 24 },
+            clockNanos = testClock,
             rawCollector = { _, ids ->
                 val requested = ids.toList()
                 calls += requested
@@ -181,6 +183,7 @@ class DeepAuxDiscoveryTest {
             environment = environment,
             metadataBudget = DiscoveryMetadataBudget(),
             deviceApi = { 24 },
+            clockNanos = testClock,
             rawCollector = { _, ids ->
                 calls += ids.toList()
                 payload()
@@ -208,6 +211,7 @@ class DeepAuxDiscoveryTest {
             environment = environment,
             metadataBudget = DiscoveryMetadataBudget(),
             deviceApi = { 24 },
+            clockNanos = testClock,
             rawCollector = { _, ids ->
                 if ("23" in ids) payload(records = listOf(Record("23"))) else payload()
             },
@@ -229,6 +233,7 @@ class DeepAuxDiscoveryTest {
             environment = environment,
             metadataBudget = DiscoveryMetadataBudget(),
             deviceApi = { 24 },
+            clockNanos = testClock,
             rawCollector = { _, _ -> payload(failures = listOf(7 to "hidden")) },
         )
         val report = backend.discover(
@@ -262,10 +267,10 @@ class DeepAuxDiscoveryTest {
         records.forEach { record ->
             writer.string(record.id)
             writer.u8(record.facing)
-            writer.u8(8) // orientation present
-            writer.u16(1) // focal
+            writer.u8(8)
+            writer.u16(1)
             writer.u16(0)
-            writer.u16(1) // private preview
+            writer.u16(1)
             writer.u16(0)
             writer.u16(0)
             writer.i32(90)

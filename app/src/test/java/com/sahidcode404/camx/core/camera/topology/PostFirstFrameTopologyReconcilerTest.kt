@@ -9,6 +9,9 @@ import com.sahidcode404.camx.core.camera.model.CameraTransportId
 import com.sahidcode404.camx.core.camera.model.LensFacing
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -49,9 +52,10 @@ class PostFirstFrameTopologyReconcilerTest {
     }
 
     @Test
-    fun `providers run concurrently rather than one after another`() {
+    fun `providers run concurrently rather than one after another`() = runTest {
         val repository = CameraTopologyRepository()
         val firstMayFinish = CompletableDeferred<Unit>()
+        var firstWaiting = false
         var secondStarted = false
         val reconciler = PostFirstFrameTopologyReconciler(
             environment = environment,
@@ -59,6 +63,7 @@ class PostFirstFrameTopologyReconcilerTest {
             providers = listOf(
                 AdvertisedTopologyEvidenceProvider { emit ->
                     emit(listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("java"))))
+                    firstWaiting = true
                     firstMayFinish.await()
                 },
                 AdvertisedTopologyEvidenceProvider { emit ->
@@ -70,11 +75,13 @@ class PostFirstFrameTopologyReconcilerTest {
                     firstMayFinish.complete(Unit)
                 },
             ),
-            dispatcher = Dispatchers.Unconfined,
+            dispatcher = StandardTestDispatcher(testScheduler),
         )
 
         reconciler.startAfterFirstFrame()
+        advanceUntilIdle()
 
+        assertTrue(firstWaiting)
         assertTrue(secondStarted)
         assertEquals(2L, repository.publicationCount())
         assertEquals(setOf("java", "ndk"), repository.topology.value!!.routes.map { it.openCameraId.value }.toSet())
@@ -143,8 +150,8 @@ class PostFirstFrameTopologyReconcilerTest {
             environment = environment,
             repository = repository,
             providers = listOf(
-                AdvertisedTopologyEvidenceProvider { _ -> Unit },
-                AdvertisedTopologyEvidenceProvider { _ -> Unit },
+                AdvertisedTopologyEvidenceProvider { _ -> },
+                AdvertisedTopologyEvidenceProvider { _ -> },
             ),
             clockNanos = { 101L },
             dispatcher = Dispatchers.Unconfined,
@@ -170,7 +177,7 @@ class PostFirstFrameTopologyReconcilerTest {
             environment = environment,
             repository = repository,
             providers = listOf(
-                AdvertisedTopologyEvidenceProvider { _ -> Unit },
+                AdvertisedTopologyEvidenceProvider { _ -> },
                 AdvertisedTopologyEvidenceProvider { _ -> error("ndk failure") },
             ),
             dispatcher = Dispatchers.Unconfined,

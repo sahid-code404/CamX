@@ -143,6 +143,7 @@ class VisiblePreviewCoordinator internal constructor(
     private var activeSelection: ActiveCameraSelection? = null
     private var preferredLens: CanonicalLensFingerprint? = null
     private var switchTransaction: LensSwitchTransaction? = null
+    private var pendingPresentationTarget: PresentationTargetIdentity? = null
 
     val uiState: StateFlow<VisiblePreviewUiState> = mutableUiState.asStateFlow()
     val renderSpec: StateFlow<VisiblePreviewRenderSpec?> = mutableRenderSpec.asStateFlow()
@@ -172,6 +173,7 @@ class VisiblePreviewCoordinator internal constructor(
             if (!granted) {
                 invalidateStartup()
                 switchTransaction = null
+                pendingPresentationTarget = null
                 clearOpeningStatuses()
                 mutableRenderSpec.value = null
                 session.pause()
@@ -206,6 +208,7 @@ class VisiblePreviewCoordinator internal constructor(
             if (permissionGranted && resumed) {
                 invalidateStartup()
                 switchTransaction = null
+                pendingPresentationTarget = null
                 mutableRenderSpec.value = null
                 session.pause()
                 beginStartup()
@@ -219,6 +222,7 @@ class VisiblePreviewCoordinator internal constructor(
             resumed = false
             invalidateStartup()
             switchTransaction = null
+            pendingPresentationTarget = null
             clearOpeningStatuses()
             mutableRenderSpec.value = null
             session.pause()
@@ -236,6 +240,7 @@ class VisiblePreviewCoordinator internal constructor(
         scope.launch {
             invalidateStartup()
             switchTransaction = null
+            pendingPresentationTarget = null
             mutableRenderSpec.value = null
             session.surfaceInvalidated(identity)
             if (permissionGranted && resumed) beginStartup()
@@ -255,6 +260,8 @@ class VisiblePreviewCoordinator internal constructor(
                 statusByLens[canonicalFingerprint] == LensTestStatus.VERIFIED
             ) return@launch
 
+            val outgoingVerified = (mutableUiState.value as? VisiblePreviewUiState.Previewing)
+                ?.firstFrameVerified == true && mutableRenderSpec.value != null
             preferredLens = canonicalFingerprint
             switchTransaction = LensSwitchTransaction(
                 canonicalFingerprint = canonicalFingerprint,
@@ -266,8 +273,12 @@ class VisiblePreviewCoordinator internal constructor(
             }
             statusByLens[canonicalFingerprint] = LensTestStatus.OPENING
             activeSelection = null
-            mutableRenderSpec.value = null
-            mutableUiState.value = VisiblePreviewUiState.Starting
+            mutableUiState.value = if (outgoingVerified) {
+                VisiblePreviewUiState.Starting
+            } else {
+                mutableRenderSpec.value?.let(VisiblePreviewUiState::Opening)
+                    ?: VisiblePreviewUiState.Starting
+            }
             // Do not rehydrate the outgoing verified session snapshot over explicit pending user intent.
             mutableLensItems.value = currentLensProjection().items
 
@@ -284,6 +295,7 @@ class VisiblePreviewCoordinator internal constructor(
         scope.launch {
             invalidateStartup()
             switchTransaction = null
+            pendingPresentationTarget = null
             mutableRenderSpec.value = null
             try {
                 session.shutdown()
@@ -297,6 +309,7 @@ class VisiblePreviewCoordinator internal constructor(
         if (!shutdownRequested.compareAndSet(false, true)) return
         invalidateStartup()
         switchTransaction = null
+        pendingPresentationTarget = null
         mutableRenderSpec.value = null
         try {
             session.shutdown()
@@ -414,7 +427,12 @@ class VisiblePreviewCoordinator internal constructor(
         target: ResolvedPreviewTarget,
     ) {
         if (!isCurrent(generation)) return
-        mutableUiState.value = VisiblePreviewUiState.WaitingForSurface
+        val currentRender = mutableRenderSpec.value
+        mutableUiState.value = if (pendingPresentationTarget != null && currentRender != null) {
+            VisiblePreviewUiState.Opening(currentRender)
+        } else {
+            VisiblePreviewUiState.WaitingForSurface
+        }
         var lease: VisiblePreviewLease? = null
         var handedToController = false
         try {
@@ -449,8 +467,12 @@ class VisiblePreviewCoordinator internal constructor(
                 bufferSize = supported.configuration.size,
                 geometry = supported.geometry,
             )
-            mutableRenderSpec.value = render
+            pendingPresentationTarget = PresentationTargetIdentity.from(target.selection)
+            // Hide before exposing any different target buffer/geometry. CameraScreen covers the stable
+            // SurfaceView while this Opening state is active, so no stale outgoing frame is rendered
+            // under target rotation, mirror, crop, or aspect-ratio geometry.
             mutableUiState.value = VisiblePreviewUiState.Opening(render)
+            mutableRenderSpec.value = render
             surfacePort.awaitBufferSize(lease.identity, supported.configuration.size)
             if (!isCurrent(generation)) return
             try {
@@ -489,6 +511,10 @@ class VisiblePreviewCoordinator internal constructor(
 
     private fun projectControllerState(state: CameraEngineState) {
         if (!permissionGranted || !resumed || shutdownRequested.get()) return
+        if (state is CameraEngineState.Previewing && state.firstFrameVerified) {
+            val pending = pendingPresentationTarget
+            if (pending != null && !pending.matches(state.selection)) return
+        }
         val selection = stateSelection(state)
         val lens = selection?.routeId?.let(::canonicalForRoute)
         var structuralFailoverStarted = false
@@ -509,9 +535,12 @@ class VisiblePreviewCoordinator internal constructor(
                         statusByLens[lens] = LensTestStatus.VERIFIED
                         preferredLens = lens
                         switchTransaction = null
+                        pendingPresentationTarget = null
                     } else {
                         statusByLens[lens] = LensTestStatus.OPENING
                     }
+                } else if (state.firstFrameVerified) {
+                    pendingPresentationTarget = null
                 }
             }
             is CameraEngineState.RecoverableError -> lens?.let(::failLens)
@@ -585,8 +614,8 @@ class VisiblePreviewCoordinator internal constructor(
         preferredLens = lens
         statusByLens[lens] = LensTestStatus.OPENING
         activeSelection = null
-        mutableRenderSpec.value = null
-        mutableUiState.value = VisiblePreviewUiState.Starting
+        mutableUiState.value = mutableRenderSpec.value?.let(VisiblePreviewUiState::Opening)
+            ?: VisiblePreviewUiState.Starting
         mutableLensItems.value = currentLensProjection().items
 
         invalidateStartup()
@@ -681,6 +710,25 @@ class VisiblePreviewCoordinator internal constructor(
         val attemptedProfiles: Set<CameraProfileFingerprint>,
         val failoverUsed: Boolean,
     )
+
+    private data class PresentationTargetIdentity(
+        val canonicalFingerprint: CanonicalLensFingerprint,
+        val profileFingerprint: CameraProfileFingerprint,
+        val routeId: CameraRouteId,
+    ) {
+        fun matches(selection: ActiveCameraSelection): Boolean =
+            canonicalFingerprint == selection.canonicalLensFingerprint &&
+                profileFingerprint == selection.profileFingerprint &&
+                routeId == selection.routeId
+
+        companion object {
+            fun from(selection: ActiveCameraSelection) = PresentationTargetIdentity(
+                canonicalFingerprint = selection.canonicalLensFingerprint,
+                profileFingerprint = selection.profileFingerprint,
+                routeId = selection.routeId,
+            )
+        }
+    }
 
     private data class ResolvedPreviewTarget(
         val selection: ActiveCameraSelection,

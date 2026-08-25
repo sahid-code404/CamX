@@ -62,6 +62,7 @@ fun CameraScreen(
 ) {
     val previewContentDescription = stringResource(R.string.camera_preview_content_description)
     val captureContentDescription = stringResource(R.string.capture_unavailable_content_description)
+    val revealPreviewSurface = shouldRevealPreviewSurface(uiState, renderSpec)
     var showAuxAudit by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
@@ -77,6 +78,18 @@ fun CameraScreen(
             onSurfaceAvailable = onSurfaceAvailable,
             onSurfaceDestroyed = onSurfaceDestroyed,
         )
+
+        // Keep the SurfaceView and its identity alive while target fixed-size/geometry is applied.
+        // A neutral cover is used only after leaving the verified outgoing presentation and remains
+        // until the exact target first frame is verified, preventing stale frames from being shown
+        // under the target crop/rotation/mirror transform.
+        if (!revealPreviewSurface) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(CamXColors.Ink),
+            )
+        }
 
         if (!permissionGranted) {
             Column(

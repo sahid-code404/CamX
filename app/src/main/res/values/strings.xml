@@ -14,4 +14,9 @@
     <string name="camera_preview_unsupported">No supported preview configuration is available.</string>
     <string name="camera_preview_camera_error">Camera preview failed.</string>
     <string name="camera_preview_startup_error">Camera startup failed.</string>
+    <string name="lens_status_advertised">Available</string>
+    <string name="lens_status_opening">Opening</string>
+    <string name="lens_status_verified">Verified</string>
+    <string name="lens_status_failed">Failed</string>
+    <string name="lens_content_description">%1$s lens, %2$s</string>
 </resources>

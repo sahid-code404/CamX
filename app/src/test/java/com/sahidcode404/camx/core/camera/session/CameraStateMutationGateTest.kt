@@ -4,6 +4,7 @@ import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
@@ -24,7 +25,7 @@ class CameraStateMutationGateTest {
             val release = CountDownLatch(1)
             val completed = CountDownLatch(1)
 
-            val job = launch {
+            val job = launch(Dispatchers.Default) {
                 gate.mutate {
                     entered.countDown()
                     check(release.await(5, TimeUnit.SECONDS))
@@ -53,14 +54,14 @@ class CameraStateMutationGateTest {
             val releaseFirst = CountDownLatch(1)
             var staleRan = false
 
-            val first = launch {
+            val first = launch(Dispatchers.Default) {
                 gate.mutate {
                     firstEntered.countDown()
                     check(releaseFirst.await(5, TimeUnit.SECONDS))
                 }
             }
             assertTrue(firstEntered.await(5, TimeUnit.SECONDS))
-            val stale = launch {
+            val stale = launch(Dispatchers.Default) {
                 gate.mutate { staleRan = true }
             }
             stale.cancelAndJoin()
@@ -87,7 +88,7 @@ class CameraStateMutationGateTest {
             val firstEntered = CountDownLatch(1)
             val releaseFirst = CountDownLatch(1)
 
-            val first = launch {
+            val first = launch(Dispatchers.Default) {
                 gate.mutate {
                     order += "first-start"
                     firstEntered.countDown()
@@ -96,7 +97,7 @@ class CameraStateMutationGateTest {
                 }
             }
             assertTrue(firstEntered.await(5, TimeUnit.SECONDS))
-            val second = launch {
+            val second = launch(Dispatchers.Default) {
                 gate.mutate { order += "second" }
             }
             releaseFirst.countDown()

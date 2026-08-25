@@ -2,7 +2,6 @@ package com.sahidcode404.camx.core.camera.diagnostics
 
 import com.sahidcode404.camx.core.camera.cache.DiscoveryCacheResetResult
 import com.sahidcode404.camx.core.camera.discovery.DeepAuxOutcomeKind
-import com.sahidcode404.camx.core.camera.discovery.JavaAdvertisedEvidenceFailureKind
 import com.sahidcode404.camx.core.camera.discovery.JavaAdvertisedEvidenceReport
 import com.sahidcode404.camx.core.camera.discovery.JavaDeepCertificationKind
 import com.sahidcode404.camx.core.camera.discovery.JavaDeepCertificationReport
@@ -11,9 +10,11 @@ import com.sahidcode404.camx.core.camera.discovery.NdkDeepEvidenceReport
 import com.sahidcode404.camx.core.camera.lens.CameraLensProjection
 import com.sahidcode404.camx.core.camera.lens.LensProfileEligibility
 import com.sahidcode404.camx.core.camera.lens.LensTestStatus
+import com.sahidcode404.camx.core.camera.model.CameraMetadataEvidence
 import com.sahidcode404.camx.core.camera.model.CameraProfile
 import com.sahidcode404.camx.core.camera.model.CameraRouteSource
 import com.sahidcode404.camx.core.camera.model.CameraTopologySnapshot
+import com.sahidcode404.camx.core.camera.model.PreviewTrust
 import java.security.MessageDigest
 import java.util.Collections
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -72,11 +73,14 @@ data class AuxLensAudit(
 
 data class AuxDeepCandidateAudit(
     val fingerprint: String,
-    val ndkOutcome: String,
+    val plannedWave: String?,
+    val ndkOutcome: String?,
     val javaCertification: String?,
     val routeResolved: Boolean,
     val profileSelectable: Boolean,
+    val sessionStatus: String?,
     val previewVerified: Boolean,
+    val pipelineStage: String,
 )
 
 data class AuxHardwareAuditSnapshot(
@@ -95,6 +99,7 @@ data class AuxHardwareAuditSnapshot(
 
 internal data class AuxDiscoveryTrackerSnapshot(
     val counters: AuxDiscoveryPipelineCounters,
+    val plannedDeepCandidates: Map<String, String>,
     val deepOutcomes: Map<String, DeepAuxOutcomeKind>,
     val javaCertification: Map<String, JavaDeepCertificationKind>,
     val deepRescanResult: DeepRescanRequestResult?,
@@ -115,6 +120,7 @@ internal class AuxDiscoveryAuditTracker(
     private val physicalMetadataSuccesses = LinkedHashSet<String>()
     private val physicalMetadataFailures = LinkedHashSet<String>()
     private val ndkAdvertisedEvidence = LinkedHashSet<String>()
+    private val plannedDeepCandidates = LinkedHashMap<String, String>()
     private val deepOutcomes = LinkedHashMap<String, DeepAuxOutcomeKind>()
     private val javaCertification = LinkedHashMap<String, JavaDeepCertificationKind>()
 
@@ -146,6 +152,7 @@ internal class AuxDiscoveryAuditTracker(
         physicalMetadataSuccesses.clear()
         physicalMetadataFailures.clear()
         ndkAdvertisedEvidence.clear()
+        plannedDeepCandidates.clear()
         deepOutcomes.clear()
         javaCertification.clear()
         runStartedNs = clockNanos().coerceAtLeast(0L)
@@ -173,17 +180,17 @@ internal class AuxDiscoveryAuditTracker(
                 if (evidence.source == CameraRouteSource.JAVA_PHYSICAL) {
                     evidence.logicalParentId?.value?.let(logicalParents::add)
                     physicalRelationships += address
-                    physicalMetadataSuccesses += address
+                    if (hasPhysicalMetadata(evidence)) physicalMetadataSuccesses += address
                 }
             }
         }
         report.failures.forEach { failure ->
-            failure.transportId?.let(javaAdvertisedIds::add)
-            if (failure.kind == JavaAdvertisedEvidenceFailureKind.PHYSICAL_CHARACTERISTICS_UNAVAILABLE ||
-                failure.kind == JavaAdvertisedEvidenceFailureKind.INVALID_PHYSICAL_ID ||
-                failure.kind == JavaAdvertisedEvidenceFailureKind.PHYSICAL_ID_LIMIT_EXCEEDED
-            ) {
-                physicalMetadataFailures += "${failure.transportId.orEmpty()}|${failure.physicalId.orEmpty()}|${failure.kind.name}"
+            if (failure.physicalId == null) {
+                failure.transportId?.let(javaAdvertisedIds::add)
+            } else {
+                physicalMetadataFailures +=
+                    "${failure.transportId.orEmpty()}|${failure.physicalId}|${failure.kind.name}"
+                failure.transportId?.let(logicalParents::add)
             }
         }
         changed()
@@ -200,6 +207,9 @@ internal class AuxDiscoveryAuditTracker(
 
     @Synchronized
     fun onNdkDeep(report: NdkDeepEvidenceReport) {
+        report.plannedCandidates.forEach { candidate ->
+            plannedDeepCandidates[candidate.transportId] = candidate.wave.name
+        }
         report.outcomes.forEach { outcome ->
             deepOutcomes[outcome.candidate.transportId] = outcome.outcome
             if (outcome.outcome == DeepAuxOutcomeKind.VALID_METADATA && firstNdkDeepValidNs == null) {
@@ -290,6 +300,7 @@ internal class AuxDiscoveryAuditTracker(
         )
         return AuxDiscoveryTrackerSnapshot(
             counters = counters,
+            plannedDeepCandidates = Collections.unmodifiableMap(LinkedHashMap(plannedDeepCandidates)),
             deepOutcomes = Collections.unmodifiableMap(LinkedHashMap(deepOutcomes)),
             javaCertification = Collections.unmodifiableMap(LinkedHashMap(javaCertification)),
             deepRescanResult = deepRescanResult,
@@ -310,6 +321,19 @@ internal class AuxDiscoveryAuditTracker(
 
     private fun address(source: CameraRouteSource, id: String, physical: String?): String =
         "${source.name}|$id|${physical.orEmpty()}"
+
+    private fun hasPhysicalMetadata(evidence: CameraMetadataEvidence): Boolean =
+        evidence.focalLengthsMillimetres.isNotEmpty() ||
+            evidence.sensorPhysicalWidthMillimetres != null ||
+            evidence.sensorPhysicalHeightMillimetres != null ||
+            evidence.activeArray != null ||
+            evidence.pixelArray != null ||
+            evidence.sensorOrientationDegrees != null ||
+            evidence.apertureValues.isNotEmpty() ||
+            evidence.colorFilterArrangement != null ||
+            evidence.capabilities.previewStreams.isNotEmpty() ||
+            evidence.capabilities.fpsRanges.isNotEmpty() ||
+            evidence.capabilities.rawSizes.isNotEmpty()
 
     private fun changed() {
         val current = changesMutable.value
@@ -337,21 +361,25 @@ internal object AuxHardwareAudit {
                 profileAudit(profile, projection)
             }
             val preferred = projection.targets[lens.fingerprint]?.profileFingerprint?.value
+            val hasSessionVerifiedProfile = lens.profiles.any { it.route.previewTrust == PreviewTrust.VERIFIED }
+            val currentStatus = itemByLens[lens.fingerprint]?.status
             AuxLensAudit(
                 fingerprint = sanitized("lens", lens.fingerprint.value),
                 facing = lens.facing.name,
                 opticalMetadata = opticalMetadata(topology, lens.profiles),
                 profileCount = lens.profiles.size,
                 preferredProfile = preferred?.let { sanitized("profile", it) },
-                verificationStatus = itemByLens[lens.fingerprint]?.status?.name ?: "DIAGNOSTIC_ONLY",
+                verificationStatus = currentStatus?.name ?: if (hasSessionVerifiedProfile) {
+                    "SESSION_VERIFIED"
+                } else {
+                    "DIAGNOSTIC_ONLY"
+                },
                 profiles = Collections.unmodifiableList(ArrayList(profiles)),
             )
         }
-        val selectableProfiles = topology.canonicalLenses.asSequence()
-            .flatMap { it.profiles.asSequence() }
-            .filter { projection.eligibilityByProfile[it.fingerprint] is LensProfileEligibility.Eligible }
-            .toList()
-        val deepCandidates = tracker.deepOutcomes.keys.sorted().map { id ->
+        val candidateIds = (tracker.plannedDeepCandidates.keys +
+            tracker.deepOutcomes.keys + tracker.javaCertification.keys).distinct().sorted()
+        val deepCandidates = candidateIds.map { id ->
             val candidateProfiles = topology.canonicalLenses.asSequence()
                 .flatMap { lens -> lens.profiles.asSequence().map { lens to it } }
                 .filter { (_, profile) -> profile.route.openCameraId.value == id }
@@ -360,21 +388,43 @@ internal object AuxHardwareAudit {
             val profileSelectable = candidateProfiles.any { (_, profile) ->
                 projection.eligibilityByProfile[profile.fingerprint] is LensProfileEligibility.Eligible
             }
-            val previewVerified = candidateProfiles.any { (lens, profile) ->
-                itemByLens[lens.fingerprint]?.status == LensTestStatus.VERIFIED &&
-                    projection.targets[lens.fingerprint]?.profileFingerprint == profile.fingerprint
+            val selectedCandidate = candidateProfiles.firstOrNull { (lens, profile) ->
+                projection.targets[lens.fingerprint]?.profileFingerprint == profile.fingerprint
+            }
+            val sessionStatus = selectedCandidate?.first?.let { lens -> itemByLens[lens.fingerprint]?.status?.name }
+            val previewVerified = sessionStatus == LensTestStatus.VERIFIED.name
+            val ndkOutcome = tracker.deepOutcomes[id]
+            val javaCertification = tracker.javaCertification[id]
+            val pipelineStage = when {
+                ndkOutcome == null -> "PLANNED_NOT_ATTEMPTED"
+                ndkOutcome != DeepAuxOutcomeKind.VALID_METADATA -> "NDK_${ndkOutcome.name}"
+                javaCertification == null -> "NDK_VALID_JAVA_NOT_ATTEMPTED"
+                javaCertification != JavaDeepCertificationKind.CERTIFIED -> "NDK_VALID_JAVA_CERTIFICATION_FAILED"
+                !routeResolved -> "JAVA_CERTIFIED_RESOLVER_REJECTED"
+                !profileSelectable -> "ROUTE_CREATED_PROFILE_REJECTED"
+                selectedCandidate == null -> "PROFILE_ELIGIBLE_NOT_PREFERRED"
+                sessionStatus == LensTestStatus.FAILED.name -> "LENS_SELECTABLE_SESSION_FAILED"
+                sessionStatus == LensTestStatus.OPENING.name -> "LENS_SELECTABLE_OPENING"
+                previewVerified -> "LENS_PREVIEW_VERIFIED"
+                else -> "LENS_SELECTABLE_UNVERIFIED"
             }
             AuxDeepCandidateAudit(
                 fingerprint = sanitized("deep", id),
-                ndkOutcome = tracker.deepOutcomes.getValue(id).name,
-                javaCertification = tracker.javaCertification[id]?.name,
+                plannedWave = tracker.plannedDeepCandidates[id],
+                ndkOutcome = ndkOutcome?.name,
+                javaCertification = javaCertification?.name,
                 routeResolved = routeResolved,
                 profileSelectable = profileSelectable,
+                sessionStatus = sessionStatus,
                 previewVerified = previewVerified,
+                pipelineStage = pipelineStage,
             )
         }
         val profiles = topology.canonicalLenses.sumOf { it.profiles.size }
-        val verified = projection.items.count { it.status == LensTestStatus.VERIFIED }
+        val verified = topology.canonicalLenses.count { lens ->
+            itemByLens[lens.fingerprint]?.status == LensTestStatus.VERIFIED ||
+                lens.profiles.any { it.route.previewTrust == PreviewTrust.VERIFIED }
+        }
         return AuxHardwareAuditSnapshot(
             counters = tracker.counters,
             resolvedRoutes = topology.routes.size,
@@ -427,8 +477,13 @@ internal object AuxHardwareAudit {
     private fun sanitized(kind: String, value: String): String {
         val bytes = MessageDigest.getInstance("SHA-256")
             .digest("aux-audit|$kind|$value".toByteArray(Charsets.UTF_8))
+        val alphabet = "0123456789abcdef"
         return buildString(16) {
-            for (index in 0 until 8) append("%02x".format(bytes[index]))
+            repeat(8) { index ->
+                val byte = bytes[index].toInt() and 0xff
+                append(alphabet[byte ushr 4])
+                append(alphabet[byte and 0x0f])
+            }
         }
     }
 }

@@ -74,8 +74,9 @@ class DeepAuxDiscoveryTest {
             ),
         )
 
-        assertEquals(DeepAuxWave.HOT, plan.candidates.single { it.transportId == "5" }.wave)
-        assertEquals(1, plan.candidates.count { it.transportId == "5" })
+        val hotCandidate = plan.candidates.single { it.transportId.toIntOrNull() == 5 }
+        assertEquals(DeepAuxWave.HOT, hotCandidate.wave)
+        assertEquals(1, plan.candidates.count { it.transportId.toIntOrNull() == 5 })
     }
 
     @Test
@@ -92,8 +93,9 @@ class DeepAuxDiscoveryTest {
             ),
         )
 
-        assertEquals(DeepAuxWave.NEARBY, plan.candidates.single { it.transportId == "3" }.wave)
-        assertEquals(1, plan.candidates.count { it.transportId == "3" })
+        val nearbyCandidate = plan.candidates.single { it.transportId.toIntOrNull() == 3 }
+        assertEquals(DeepAuxWave.NEARBY, nearbyCandidate.wave)
+        assertEquals(1, plan.candidates.count { it.transportId.toIntOrNull() == 3 })
     }
 
     @Test

@@ -5,6 +5,7 @@ import com.sahidcode404.camx.core.camera.discovery.CameraEvidenceSnapshot
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraMetadataEvidence
 import com.sahidcode404.camx.core.camera.model.CameraRouteSource
+import com.sahidcode404.camx.core.camera.model.CameraTopologySnapshot
 import com.sahidcode404.camx.core.camera.model.LensFacing
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
@@ -196,13 +197,16 @@ internal class PostFirstFrameTopologyReconciler(
         if (initialRequested.compareAndSet(false, true)) requestReconciliation()
     }
 
-    fun requestReconciliation(onFinished: () -> Unit = {}): ReconciliationRequestResult {
+    fun requestReconciliation(
+        preserveCurrentTopology: Boolean = false,
+        onFinished: () -> Unit = {},
+    ): ReconciliationRequestResult {
         if (closed.get()) return ReconciliationRequestResult.CLOSED
         if (!armed.get()) return ReconciliationRequestResult.NOT_ARMED
         if (!running.compareAndSet(false, true)) return ReconciliationRequestResult.ALREADY_RUNNING
         scope.launch {
             try {
-                reconcileOnce()
+                reconcileOnce(preserveCurrentTopology)
             } finally {
                 running.set(false)
                 onFinished()
@@ -213,10 +217,15 @@ internal class PostFirstFrameTopologyReconciler(
 
     fun isRunning(): Boolean = running.get()
 
-    private suspend fun reconcileOnce() {
+    private suspend fun reconcileOnce(preserveCurrentTopology: Boolean) {
         val previous = repository.topology.value
         val permit = repository.beginReconciliation(environment)
         val evidence = CurrentTopologyEvidenceAccumulator(environment)
+        if (preserveCurrentTopology && previous != null) {
+            check(evidence.merge(previousEvidenceSnapshots(previous)) != EvidenceMergeResult.REJECTED) {
+                "Current topology evidence exceeds explicit rescan bounds"
+            }
+        }
         val publicationMutex = Mutex()
         val providerOutcomeMutex = Mutex()
         var publishedAnyBatch = false
@@ -265,7 +274,7 @@ internal class PostFirstFrameTopologyReconciler(
             }
         }
 
-        if (closed.get() || publishedAnyBatch) return
+        if (closed.get() || publishedAnyBatch || preserveCurrentTopology) return
         val allProvidersCompletedSuccessfully = providerOutcomeMutex.withLock {
             completedProviders == providers.size && failedProviders == 0
         }
@@ -279,6 +288,18 @@ internal class PostFirstFrameTopologyReconciler(
         )
         if (!closed.get()) repository.publish(empty, permit)
     }
+
+    private fun previousEvidenceSnapshots(previous: CameraTopologySnapshot): List<CameraEvidenceSnapshot> =
+        CameraRouteSource.entries.mapNotNull { source ->
+            val values = previous.evidence.filter { it.source == source }
+            if (values.isEmpty()) return@mapNotNull null
+            CameraEvidenceSnapshot(
+                source = source,
+                environment = environment,
+                evidence = values,
+                completedAtElapsedRealtimeNs = previous.generatedAtElapsedRealtimeNs,
+            )
+        }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return

@@ -123,8 +123,8 @@ class DevelopmentUpdateRepository internal constructor(
     override fun cancel() {
         val job = synchronized(operationLock) { activeJob }
         if (job == null) return
-        httpClient.cancelActive()
         job.cancel(CancellationException("Development update cancelled"))
+        httpClient.cancelActive()
     }
 
     override fun reportInstallFailure(code: UpdateFailureCode) {

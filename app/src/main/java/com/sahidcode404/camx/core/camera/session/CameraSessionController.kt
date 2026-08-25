@@ -1,12 +1,15 @@
 package com.sahidcode404.camx.core.camera.session
 
 import android.annotation.SuppressLint
+import android.annotation.TargetApi
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.OutputConfiguration
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
@@ -27,6 +30,7 @@ import com.sahidcode404.camx.core.camera.model.CameraResourceSnapshot
 import com.sahidcode404.camx.core.camera.model.CameraRoute
 import com.sahidcode404.camx.core.camera.model.CameraStartupMilestone
 import com.sahidcode404.camx.core.camera.model.CameraTransportId
+import com.sahidcode404.camx.core.camera.model.PhysicalCameraId
 import com.sahidcode404.camx.core.camera.model.PreviewConfiguration
 import com.sahidcode404.camx.core.camera.model.PreviewConfigurationAttemptKind
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
@@ -379,9 +383,10 @@ class CameraSessionController private constructor(
 
     private fun issueConfigure(command: ConfigureCommand) {
         try {
-            runtime.platform.configurePreview(
+            runtime.platform.configurePreviewTargeted(
                 command.device,
                 command.preview.surface.token,
+                command.preview.route.physicalCameraId,
                 command.preview.configuration,
                 command.preview.settings,
                 command.preview.attempt,
@@ -831,6 +836,24 @@ class CameraSessionController private constructor(
             settings: SettingsSnapshot,
             attempt: PreviewConfigurationAttemptKind,
             callbacks: CameraSessionCallbacks,
+        ) = configurePreviewTargeted(
+            device = device,
+            surfaceToken = surfaceToken,
+            physicalCameraId = null,
+            configuration = configuration,
+            settings = settings,
+            attempt = attempt,
+            callbacks = callbacks,
+        )
+
+        override fun configurePreviewTargeted(
+            device: CameraDeviceHandle,
+            surfaceToken: Any,
+            physicalCameraId: PhysicalCameraId?,
+            configuration: PreviewConfiguration,
+            settings: SettingsSnapshot,
+            attempt: PreviewConfigurationAttemptKind,
+            callbacks: CameraSessionCallbacks,
         ) {
             val camera = (device as AndroidDeviceHandle).device
             val surface = surfaceToken as Surface
@@ -853,17 +876,41 @@ class CameraSessionController private constructor(
                     CameraCaptureSessionHandle::close,
                 ).also { delivered = it }
             }
-            camera.createCaptureSession(
-                listOf(surface),
-                object : CameraCaptureSession.StateCallback() {
-                    override fun onConfigured(session: CameraCaptureSession) {
-                        callbacks.onConfigured(deliveryFor(session), request)
-                    }
+            val stateCallback = object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(session: CameraCaptureSession) {
+                    callbacks.onConfigured(deliveryFor(session), request)
+                }
 
-                    override fun onConfigureFailed(session: CameraCaptureSession) {
-                        callbacks.onConfigureFailed(deliveryFor(session))
-                    }
-                },
+                override fun onConfigureFailed(session: CameraCaptureSession) {
+                    callbacks.onConfigureFailed(deliveryFor(session))
+                }
+            }
+            if (physicalCameraId == null) {
+                camera.createCaptureSession(
+                    listOf(surface),
+                    stateCallback,
+                    callbackHandler,
+                )
+            } else {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+                    throw UnsupportedOperationException("Physical preview output requires Android API 28+")
+                }
+                createPhysicalPreviewSession(camera, surface, physicalCameraId, stateCallback)
+            }
+        }
+
+        @TargetApi(Build.VERSION_CODES.P)
+        private fun createPhysicalPreviewSession(
+            camera: CameraDevice,
+            surface: Surface,
+            physicalCameraId: PhysicalCameraId,
+            callbacks: CameraCaptureSession.StateCallback,
+        ) {
+            val output = OutputConfiguration(surface)
+            output.setPhysicalCameraId(physicalCameraId.value)
+            camera.createCaptureSessionByOutputConfigurations(
+                listOf(output),
+                callbacks,
                 callbackHandler,
             )
         }

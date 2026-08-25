@@ -559,6 +559,8 @@ class VisiblePreviewCoordinator internal constructor(
                 activeSelection = state.selection
                 if (lens != null) {
                     if (state.firstFrameVerified) {
+                        val canonicalSelection = state.selection.copy(canonicalLensFingerprint = lens)
+                        rapidSwitch.recordVerifiedSelection(canonicalSelection)
                         statusByLens.keys.toList().forEach { fingerprint ->
                             if (fingerprint != lens && statusByLens[fingerprint] == LensTestStatus.VERIFIED) {
                                 statusByLens[fingerprint] = LensTestStatus.ADVERTISED
@@ -573,6 +575,7 @@ class VisiblePreviewCoordinator internal constructor(
                         statusByLens[lens] = LensTestStatus.OPENING
                     }
                 } else if (state.firstFrameVerified) {
+                    rapidSwitch.recordVerifiedSelection(state.selection)
                     pendingPresentationTarget = null
                 }
             }
@@ -795,6 +798,7 @@ class VisiblePreviewCoordinator internal constructor(
                     }
                 }
                 activeSelection = previewing.selection
+                rapidSwitch.recordVerifiedSelection(previewing.selection.copy(canonicalLensFingerprint = canonical))
                 statusByLens[canonical] = LensTestStatus.VERIFIED
                 preferredLens = canonical
             }

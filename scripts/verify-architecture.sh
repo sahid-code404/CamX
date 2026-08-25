@@ -66,6 +66,7 @@ done
 ./scripts/verify-preview-policy.sh
 bash ./scripts/verify-visible-preview.sh
 bash ./scripts/verify-topology-reconciliation.sh
+bash ./scripts/verify-lens-test-ui.sh
 ./scripts/verify-development-ota.sh
 
 echo 'Architecture verification passed.'

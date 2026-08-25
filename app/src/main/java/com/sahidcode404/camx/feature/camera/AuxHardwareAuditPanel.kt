@@ -29,6 +29,7 @@ internal fun AuxHardwareAuditPanel(
     onResetDiscoveryCache: () -> Unit,
 ) {
     val counters = audit.counters
+    val switch = audit.switch
     val cache = TopologyCacheMigrationAudit.snapshot()
     Column(
         modifier = Modifier
@@ -59,6 +60,19 @@ internal fun AuxHardwareAuditPanel(
             timingLine("Last refresh completion", inventory.lastRefreshCompletionLatencyMs)
             auditLine("Last refresh outcome", inventory.lastRefreshOutcome?.name ?: "none")
         }
+
+        Text("Lens switch", color = Color.White)
+        timingLine("Tap → accepted", switch.tapToAcceptedMs)
+        timingLine("Tap → cleanup complete", switch.tapToCleanupCompleteMs)
+        timingLine("Tap → open requested", switch.tapToOpenRequestedMs)
+        timingLine("Tap → camera opened", switch.tapToCameraOpenedMs)
+        timingLine("Tap → session configured", switch.tapToSessionConfiguredMs)
+        timingLine("Tap → first frame", switch.tapToFirstFrameMs)
+        timingLine("Tap → PreviewVerified", switch.tapToPreviewVerifiedMs)
+        auditLine("Superseded intents", switch.supersededIntentCount)
+        auditLine("Actual opens", switch.actualOpenCount)
+        auditLine("Transient retries", switch.transientRetryCount)
+        auditLine("Fallback to last verified", switch.fallbackToLastVerifiedCount)
 
         Text("Topology cache", color = Color.White)
         auditLine("Current topology schema", cache.currentTopologySchema)

@@ -16,6 +16,8 @@ internal const val DEEP_AUX_DEFAULT_NEIGHBOR_RADIUS = 4
 internal const val DEEP_AUX_DEFAULT_MAXIMUM_NUMERIC_ID = 1024
 internal const val DEEP_AUX_DEFAULT_MAXIMUM_CANDIDATES = 96
 internal const val DEEP_AUX_HARD_MAXIMUM_CANDIDATES = 128
+internal const val DEEP_AUX_DEFAULT_NATIVE_MICRO_BATCH_SIZE = 8
+internal const val DEEP_AUX_HARD_NATIVE_MICRO_BATCH_SIZE = 16
 internal const val DEEP_AUX_HARD_LOW_NAMESPACE_MAX = 63
 internal const val DEEP_AUX_HARD_NEIGHBOR_RADIUS = 8
 internal const val DEEP_AUX_MAX_ID_LENGTH = 128
@@ -34,6 +36,7 @@ data class DeepAuxDiscoveryLimits(
     val neighborRadius: Int = DEEP_AUX_DEFAULT_NEIGHBOR_RADIUS,
     val maximumNumericId: Int = DEEP_AUX_DEFAULT_MAXIMUM_NUMERIC_ID,
     val maximumCandidateCount: Int = DEEP_AUX_DEFAULT_MAXIMUM_CANDIDATES,
+    val nativeMicroBatchSize: Int = DEEP_AUX_DEFAULT_NATIVE_MICRO_BATCH_SIZE,
 )
 
 data class DeepAuxDiscoveryRequest(
@@ -162,7 +165,7 @@ data class NdkDeepEvidenceReport(
 
 internal object NdkDeepNativeBridge {
     fun collect(deviceApi: Int, candidates: Array<String>): ByteArray? {
-        if (deviceApi < CAMERA_NDK_MIN_API || candidates.size > DEEP_AUX_HARD_MAXIMUM_CANDIDATES) return null
+        if (deviceApi < CAMERA_NDK_MIN_API || candidates.size > DEEP_AUX_HARD_NATIVE_MICRO_BATCH_SIZE) return null
         if (NativeCore.availability != Available) return null
         if (candidates.any { !DeepAuxCandidatePlanner.isSafeExactId(it) }) return null
         return runCatching { nativeCollectCandidates(deviceApi, candidates) }.getOrNull()
@@ -184,53 +187,58 @@ internal class NdkDeepAuxDiscoveryBackend(
         emit: suspend (NdkDeepEvidenceReport) -> Unit,
     ): NdkDeepEvidenceReport {
         val plan = DeepAuxCandidatePlanner.plan(request)
+        val microBatchSize = request.limits.nativeMicroBatchSize.coerceIn(
+            1,
+            DEEP_AUX_HARD_NATIVE_MICRO_BATCH_SIZE,
+        )
         val allEvidence = LinkedHashMap<String, CameraMetadataEvidence>()
         val allFailures = ArrayList<NdkAdvertisedEvidenceFailure>()
         val allOutcomes = ArrayList<DeepAuxCandidateOutcome>()
 
         for (wave in DeepAuxWave.entries) {
-            val candidates = plan.wave(wave)
-            if (candidates.isEmpty()) continue
-            val ids = candidates.map { it.transportId }.toTypedArray()
-            val payload = try {
-                metadataBudget.withNativeMetadata { rawCollector(deviceApi(), ids) }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Throwable) {
-                null
-            }
-            val decoded = NdkAdvertisedSnapshotCodec.decode(payload, CameraRouteSource.NDK_DEEP)
-            val report = if (decoded == null || !decoded.runtimeAvailable) {
-                val outcomes = candidates.map { DeepAuxCandidateOutcome(it, DeepAuxOutcomeKind.RUNTIME_UNAVAILABLE) }
-                NdkDeepEvidenceReport(
-                    snapshot = snapshot(emptyList()),
-                    outcomes = immutableList(outcomes),
-                    failures = emptyList(),
-                )
-            } else {
-                val evidenceById = decoded.evidence.associateBy { it.transportId.value }
-                val failuresById = decoded.failures.groupBy { it.transportId }
-                val outcomes = candidates.map { candidate ->
-                    val kind = when {
-                        candidate.transportId in evidenceById -> DeepAuxOutcomeKind.VALID_METADATA
-                        else -> failuresById[candidate.transportId]
-                            ?.firstOrNull()
-                            ?.kind
-                            ?.toDeepOutcome()
-                            ?: DeepAuxOutcomeKind.NOT_FOUND_OR_UNAVAILABLE
-                    }
-                    DeepAuxCandidateOutcome(candidate, kind)
+            val waveCandidates = plan.wave(wave)
+            for (candidates in waveCandidates.chunked(microBatchSize)) {
+                val ids = candidates.map { it.transportId }.toTypedArray()
+                val payload = try {
+                    metadataBudget.withNativeMetadata { rawCollector(deviceApi(), ids) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    null
                 }
-                NdkDeepEvidenceReport(
-                    snapshot = snapshot(decoded.evidence),
-                    outcomes = immutableList(outcomes),
-                    failures = immutableList(decoded.failures),
-                )
+                val decoded = NdkAdvertisedSnapshotCodec.decode(payload, CameraRouteSource.NDK_DEEP)
+                val report = if (decoded == null || !decoded.runtimeAvailable) {
+                    val outcomes = candidates.map { DeepAuxCandidateOutcome(it, DeepAuxOutcomeKind.RUNTIME_UNAVAILABLE) }
+                    NdkDeepEvidenceReport(
+                        snapshot = snapshot(emptyList()),
+                        outcomes = immutableList(outcomes),
+                        failures = emptyList(),
+                    )
+                } else {
+                    val evidenceById = decoded.evidence.associateBy { it.transportId.value }
+                    val failuresById = decoded.failures.groupBy { it.transportId }
+                    val outcomes = candidates.map { candidate ->
+                        val kind = when {
+                            candidate.transportId in evidenceById -> DeepAuxOutcomeKind.VALID_METADATA
+                            else -> failuresById[candidate.transportId]
+                                ?.firstOrNull()
+                                ?.kind
+                                ?.toDeepOutcome()
+                                ?: DeepAuxOutcomeKind.NOT_FOUND_OR_UNAVAILABLE
+                        }
+                        DeepAuxCandidateOutcome(candidate, kind)
+                    }
+                    NdkDeepEvidenceReport(
+                        snapshot = snapshot(decoded.evidence),
+                        outcomes = immutableList(outcomes),
+                        failures = immutableList(decoded.failures),
+                    )
+                }
+                report.snapshot.evidence.forEach { allEvidence[it.transportId.value] = it }
+                allFailures += report.failures
+                allOutcomes += report.outcomes
+                emit(report)
             }
-            report.snapshot.evidence.forEach { allEvidence[it.transportId.value] = it }
-            allFailures += report.failures
-            allOutcomes += report.outcomes
-            emit(report)
         }
 
         return NdkDeepEvidenceReport(

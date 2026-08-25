@@ -60,8 +60,8 @@ internal data class JavaAdvertisedCameraRecord(
 
 internal interface JavaAdvertisedCameraMetadataSource {
     fun advertisedIds(): List<String>
-    fun read(id: String): JavaAdvertisedCameraRecord?
-    fun readMinimal(id: String): JavaAdvertisedCameraRecord? = read(id)?.minimalCopy()
+    suspend fun read(id: String): JavaAdvertisedCameraRecord?
+    suspend fun readMinimal(id: String): JavaAdvertisedCameraRecord? = read(id)?.minimalCopy()
 }
 
 enum class JavaAdvertisedEvidenceFailureKind {
@@ -444,9 +444,11 @@ internal class AndroidJavaAdvertisedCameraMetadataSource(
 ) : JavaAdvertisedCameraMetadataSource {
     override fun advertisedIds(): List<String> = cameraManager.cameraIdList.toList()
 
-    override fun readMinimal(id: String): JavaAdvertisedCameraRecord = readRecord(id, includeEnrichment = false)
+    override suspend fun readMinimal(id: String): JavaAdvertisedCameraRecord =
+        readRecord(id, includeEnrichment = false)
 
-    override fun read(id: String): JavaAdvertisedCameraRecord = readRecord(id, includeEnrichment = true)
+    override suspend fun read(id: String): JavaAdvertisedCameraRecord =
+        readRecord(id, includeEnrichment = true)
 
     private fun readRecord(id: String, includeEnrichment: Boolean): JavaAdvertisedCameraRecord {
         val characteristics = cameraManager.getCameraCharacteristics(id)

@@ -9,14 +9,12 @@ import com.sahidcode404.camx.core.camera.model.CameraStreamCapability
 import com.sahidcode404.camx.core.camera.model.IntSize
 import com.sahidcode404.camx.core.camera.model.LensFacing
 import com.sahidcode404.camx.core.camera.model.PreviewStreamType
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.startCoroutine
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -214,30 +212,36 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
     }
 
     @Test
-    fun `java metadata work never exceeds configured three lanes`() = runBlocking(Dispatchers.Default) {
-        val active = AtomicInteger(0)
-        val maximum = AtomicInteger(0)
-        val allEntered = CountDownLatch(DEFAULT_JAVA_METADATA_LANES)
-        val release = CountDownLatch(1)
+    fun `java metadata work reaches exactly configured three lanes without blocking`() = runTest {
+        var active = 0
+        var maximum = 0
+        val threeEntered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
         val records = (0 until 6).associate { index -> "id-$index" to record("id-$index") }.toMutableMap()
         val source = object : JavaAdvertisedCameraMetadataSource {
             override fun advertisedIds(): List<String> = records.keys.toList()
-            override fun read(id: String): JavaAdvertisedCameraRecord? = records[id]
-            override fun readMinimal(id: String): JavaAdvertisedCameraRecord? {
-                val now = active.incrementAndGet()
-                maximum.updateAndGet { old -> maxOf(old, now) }
-                allEntered.countDown()
-                if (allEntered.count == 0L) release.countDown()
-                release.await(2, TimeUnit.SECONDS)
-                active.decrementAndGet()
+
+            override suspend fun read(id: String): JavaAdvertisedCameraRecord? = records[id]
+
+            override suspend fun readMinimal(id: String): JavaAdvertisedCameraRecord? {
+                active += 1
+                maximum = maxOf(maximum, active)
+                if (maximum == DEFAULT_JAVA_METADATA_LANES) threeEntered.complete(Unit)
+                release.await()
+                active -= 1
                 return records[id]?.minimalCopy()
             }
         }
 
-        backend(source).discoverReport(DiscoveryDepth.ADVERTISED)
+        val discovery = launch { backend(source).discoverReport(DiscoveryDepth.ADVERTISED) }
+        threeEntered.await()
 
-        assertTrue(maximum.get() <= DEFAULT_JAVA_METADATA_LANES)
-        assertEquals(DEFAULT_JAVA_METADATA_LANES, maximum.get())
+        assertEquals(DEFAULT_JAVA_METADATA_LANES, active)
+        assertEquals(DEFAULT_JAVA_METADATA_LANES, maximum)
+
+        release.complete(Unit)
+        discovery.join()
+        assertEquals(0, active)
     }
 
     @Test
@@ -319,13 +323,13 @@ class AndroidAdvertisedCameraEvidenceBackendTest {
 
         override fun advertisedIds(): List<String> = ids
 
-        override fun readMinimal(id: String): JavaAdvertisedCameraRecord? {
+        override suspend fun readMinimal(id: String): JavaAdvertisedCameraRecord? {
             reads += id
             if (id in failReads) throw IllegalStateException("inaccessible")
             return records[id]?.minimalCopy()
         }
 
-        override fun read(id: String): JavaAdvertisedCameraRecord? {
+        override suspend fun read(id: String): JavaAdvertisedCameraRecord? {
             reads += id
             enrichedReads += id
             if (id in failReads) throw IllegalStateException("inaccessible")

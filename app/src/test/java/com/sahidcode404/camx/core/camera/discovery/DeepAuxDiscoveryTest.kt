@@ -3,8 +3,7 @@ package com.sahidcode404.camx.core.camera.discovery
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraRouteSource
 import java.io.ByteArrayOutputStream
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -104,66 +103,128 @@ class DeepAuxDiscoveryTest {
     }
 
     @Test
-    fun `deep backend emits hot nearby low waves incrementally on one native lane`() =
-        runBlocking(Dispatchers.Unconfined) {
-            val calls = ArrayList<List<String>>()
-            val emissions = ArrayList<NdkDeepEvidenceReport>()
-            val backend = NdkDeepAuxDiscoveryBackend(
-                environment = environment,
-                metadataBudget = DiscoveryMetadataBudget(),
-                deviceApi = { 24 },
-                clockNanos = { 42L },
-                rawCollector = { _, ids ->
-                    val requested = ids.toList()
-                    calls += requested
-                    payload(records = requested.take(1).map(::Record))
-                },
-            )
-            val request = DeepAuxDiscoveryRequest(
-                previouslySessionVerifiedDeepIds = listOf("verified"),
-                advertisedIds = listOf("10"),
+    fun `deep backend emits hot nearby low waves incrementally on one native lane`() = runTest {
+        val calls = ArrayList<List<String>>()
+        val emissions = ArrayList<NdkDeepEvidenceReport>()
+        val backend = NdkDeepAuxDiscoveryBackend(
+            environment = environment,
+            metadataBudget = DiscoveryMetadataBudget(),
+            deviceApi = { 24 },
+            clockNanos = { 42L },
+            rawCollector = { _, ids ->
+                val requested = ids.toList()
+                calls += requested
+                payload(records = requested.take(1).map(::Record))
+            },
+        )
+        val request = DeepAuxDiscoveryRequest(
+            previouslySessionVerifiedDeepIds = listOf("verified"),
+            advertisedIds = listOf("10"),
+            limits = DeepAuxDiscoveryLimits(
+                lowNumericNamespaceMax = 1,
+                neighborRadius = 1,
+                maximumNumericId = 20,
+                maximumCandidateCount = 20,
+            ),
+        )
+
+        val final = backend.discoverIncrementally(request) { emissions += it }
+
+        assertEquals(3, calls.size)
+        assertEquals(listOf("verified"), calls[0])
+        assertTrue(calls[1].containsAll(listOf("9", "10", "11")))
+        assertTrue(calls[2].containsAll(listOf("0", "1")))
+        assertEquals(3, emissions.size)
+        assertTrue(calls.all { it.size <= DEEP_AUX_DEFAULT_NATIVE_MICRO_BATCH_SIZE })
+        assertTrue(final.snapshot.evidence.all { it.source == CameraRouteSource.NDK_DEEP })
+    }
+
+    @Test
+    fun `first low namespace micro batch emits valid aux before later candidates are probed`() = runTest {
+        val calls = ArrayList<List<String>>()
+        var callCountWhenAuxEmitted: Int? = null
+        val backend = NdkDeepAuxDiscoveryBackend(
+            environment = environment,
+            metadataBudget = DiscoveryMetadataBudget(),
+            deviceApi = { 24 },
+            rawCollector = { _, ids ->
+                val requested = ids.toList()
+                calls += requested
+                if ("3" in requested) payload(records = listOf(Record("3"))) else payload()
+            },
+        )
+
+        backend.discoverIncrementally(
+            DeepAuxDiscoveryRequest(
                 limits = DeepAuxDiscoveryLimits(
-                    lowNumericNamespaceMax = 1,
-                    neighborRadius = 1,
-                    maximumNumericId = 20,
-                    maximumCandidateCount = 20,
+                    lowNumericNamespaceMax = 15,
+                    neighborRadius = 0,
+                    maximumCandidateCount = 32,
+                    nativeMicroBatchSize = 8,
                 ),
-            )
-
-            val final = backend.discoverIncrementally(request) { emissions += it }
-
-            assertEquals(3, calls.size)
-            assertEquals(listOf("verified"), calls[0])
-            assertTrue(calls[1].containsAll(listOf("9", "10", "11")))
-            assertTrue(calls[2].containsAll(listOf("0", "1")))
-            assertEquals(3, emissions.size)
-            assertTrue(final.snapshot.evidence.all { it.source == CameraRouteSource.NDK_DEEP })
+            ),
+        ) { report ->
+            if (report.snapshot.evidence.any { it.transportId.value == "3" }) {
+                callCountWhenAuxEmitted = calls.size
+            }
         }
 
-    @Test
-    fun `deep valid outside advertised list becomes metadata evidence only`() =
-        runBlocking(Dispatchers.Unconfined) {
-            val backend = NdkDeepAuxDiscoveryBackend(
-                environment = environment,
-                metadataBudget = DiscoveryMetadataBudget(),
-                deviceApi = { 24 },
-                rawCollector = { _, ids ->
-                    if ("23" in ids) payload(records = listOf(Record("23"))) else payload()
-                },
-            )
-            val report = backend.discover(
-                DeepAuxDiscoveryRequest(
-                    advertisedIds = listOf("0", "1"),
-                    previouslySuccessfulDeepIds = listOf("23"),
-                    limits = DeepAuxDiscoveryLimits(lowNumericNamespaceMax = 1, neighborRadius = 0),
-                ),
-            )
-            assertTrue(report.snapshot.evidence.any { it.transportId.value == "23" })
-            assertFalse(report.snapshot.evidence.any { it.source != CameraRouteSource.NDK_DEEP })
-        }
+        assertEquals(listOf((0..7).map(Int::toString), (8..15).map(Int::toString)), calls)
+        assertTrue(calls.all { it.size <= 8 })
+        assertEquals(1, callCountWhenAuxEmitted)
+    }
 
     @Test
-    fun `typed deep native failures are preserved`() = runBlocking(Dispatchers.Unconfined) {
+    fun `configured micro batch is hard bounded before native invocation`() = runTest {
+        val calls = ArrayList<List<String>>()
+        val backend = NdkDeepAuxDiscoveryBackend(
+            environment = environment,
+            metadataBudget = DiscoveryMetadataBudget(),
+            deviceApi = { 24 },
+            rawCollector = { _, ids ->
+                calls += ids.toList()
+                payload()
+            },
+        )
+
+        backend.discover(
+            DeepAuxDiscoveryRequest(
+                limits = DeepAuxDiscoveryLimits(
+                    lowNumericNamespaceMax = 31,
+                    neighborRadius = 0,
+                    maximumCandidateCount = 64,
+                    nativeMicroBatchSize = Int.MAX_VALUE,
+                ),
+            ),
+        )
+
+        assertEquals(2, calls.size)
+        assertTrue(calls.all { it.size <= DEEP_AUX_HARD_NATIVE_MICRO_BATCH_SIZE })
+    }
+
+    @Test
+    fun `deep valid outside advertised list becomes metadata evidence only`() = runTest {
+        val backend = NdkDeepAuxDiscoveryBackend(
+            environment = environment,
+            metadataBudget = DiscoveryMetadataBudget(),
+            deviceApi = { 24 },
+            rawCollector = { _, ids ->
+                if ("23" in ids) payload(records = listOf(Record("23"))) else payload()
+            },
+        )
+        val report = backend.discover(
+            DeepAuxDiscoveryRequest(
+                advertisedIds = listOf("0", "1"),
+                previouslySuccessfulDeepIds = listOf("23"),
+                limits = DeepAuxDiscoveryLimits(lowNumericNamespaceMax = 1, neighborRadius = 0),
+            ),
+        )
+        assertTrue(report.snapshot.evidence.any { it.transportId.value == "23" })
+        assertFalse(report.snapshot.evidence.any { it.source != CameraRouteSource.NDK_DEEP })
+    }
+
+    @Test
+    fun `typed deep native failures are preserved`() = runTest {
         val backend = NdkDeepAuxDiscoveryBackend(
             environment = environment,
             metadataBudget = DiscoveryMetadataBudget(),

@@ -10,7 +10,7 @@ import com.sahidcode404.camx.core.camera.model.LensFacing
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -105,10 +105,10 @@ class PostFirstFrameTopologyReconcilerTest {
     }
 
     @Test
-    fun `both backend failures publish empty current topology instead of stale cameras`() {
+    fun `temporary failure of every backend preserves compatible cached topology`() {
         val previous = CameraTopologyResolver.resolve(
             environment = environment,
-            snapshots = listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("stale"))),
+            snapshots = listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("cached"))),
             generatedAtElapsedRealtimeNs = 1L,
         )
         val repository = CameraTopologyRepository(previous)
@@ -116,8 +116,35 @@ class PostFirstFrameTopologyReconcilerTest {
             environment = environment,
             repository = repository,
             providers = listOf(
-                AdvertisedTopologyEvidenceProvider { _ -> error("java unavailable") },
-                AdvertisedTopologyEvidenceProvider { _ -> error("ndk unavailable") },
+                AdvertisedTopologyEvidenceProvider { _ -> error("java temporarily unavailable") },
+                AdvertisedTopologyEvidenceProvider { _ -> error("ndk temporarily unavailable") },
+            ),
+            clockNanos = { 101L },
+            dispatcher = Dispatchers.Unconfined,
+        )
+
+        reconciler.startAfterFirstFrame()
+
+        assertEquals(0L, repository.publicationCount())
+        assertEquals(previous, repository.topology.value)
+        assertEquals(listOf("cached"), repository.topology.value!!.routes.map { it.openCameraId.value })
+        reconciler.close()
+    }
+
+    @Test
+    fun `successful full empty reconciliation may clear compatible cached topology`() {
+        val previous = CameraTopologyResolver.resolve(
+            environment = environment,
+            snapshots = listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("cached"))),
+            generatedAtElapsedRealtimeNs = 1L,
+        )
+        val repository = CameraTopologyRepository(previous)
+        val reconciler = PostFirstFrameTopologyReconciler(
+            environment = environment,
+            repository = repository,
+            providers = listOf(
+                AdvertisedTopologyEvidenceProvider { _ -> Unit },
+                AdvertisedTopologyEvidenceProvider { _ -> Unit },
             ),
             clockNanos = { 101L },
             dispatcher = Dispatchers.Unconfined,
@@ -126,9 +153,33 @@ class PostFirstFrameTopologyReconcilerTest {
         reconciler.startAfterFirstFrame()
 
         assertEquals(1L, repository.publicationCount())
-        val topology = assertNotNull(repository.topology.value).let { repository.topology.value!! }
-        assertTrue(topology.routes.isEmpty())
-        assertTrue(topology.canonicalLenses.isEmpty())
+        assertTrue(repository.topology.value!!.routes.isEmpty())
+        assertTrue(repository.topology.value!!.canonicalLenses.isEmpty())
+        reconciler.close()
+    }
+
+    @Test
+    fun `one successful empty provider plus one failed provider does not prove empty`() {
+        val previous = CameraTopologyResolver.resolve(
+            environment = environment,
+            snapshots = listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("cached"))),
+            generatedAtElapsedRealtimeNs = 1L,
+        )
+        val repository = CameraTopologyRepository(previous)
+        val reconciler = PostFirstFrameTopologyReconciler(
+            environment = environment,
+            repository = repository,
+            providers = listOf(
+                AdvertisedTopologyEvidenceProvider { _ -> Unit },
+                AdvertisedTopologyEvidenceProvider { _ -> error("ndk failure") },
+            ),
+            dispatcher = Dispatchers.Unconfined,
+        )
+
+        reconciler.startAfterFirstFrame()
+
+        assertEquals(0L, repository.publicationCount())
+        assertEquals(previous, repository.topology.value)
         reconciler.close()
     }
 
@@ -179,7 +230,7 @@ class PostFirstFrameTopologyReconcilerTest {
     }
 
     @Test
-    fun `pathological evidence count fails closed before publication`() {
+    fun `pathological evidence count is rejected without fabricated empty publication`() {
         val repository = CameraTopologyRepository()
         val oversized = (0..CameraTopologyResolver.MAX_TOTAL_EVIDENCE).map { index ->
             evidence("opaque-$index")
@@ -204,8 +255,8 @@ class PostFirstFrameTopologyReconcilerTest {
 
         reconciler.startAfterFirstFrame()
 
-        assertEquals(1L, repository.publicationCount())
-        assertTrue(repository.topology.value!!.routes.isEmpty())
+        assertEquals(0L, repository.publicationCount())
+        assertNull(repository.topology.value)
         reconciler.close()
     }
 

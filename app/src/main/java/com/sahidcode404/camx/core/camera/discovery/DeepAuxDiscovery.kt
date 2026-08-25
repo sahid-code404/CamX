@@ -157,6 +157,8 @@ enum class DeepAuxOutcomeKind {
     NOT_FOUND_OR_UNAVAILABLE,
     ACCESS_DENIED,
     SERVICE_ERROR,
+    TEMPORARILY_UNAVAILABLE,
+    INVALID_OPERATION,
     MALFORMED_METADATA,
     BOUND_EXCEEDED,
     RUNTIME_UNAVAILABLE,
@@ -269,15 +271,20 @@ internal class NdkDeepAuxDiscoveryBackend(
     )
 
     private fun NdkAdvertisedEvidenceFailureKind.toDeepOutcome(): DeepAuxOutcomeKind = when (this) {
-        NdkAdvertisedEvidenceFailureKind.ACCESS_DENIED -> DeepAuxOutcomeKind.ACCESS_DENIED
-        NdkAdvertisedEvidenceFailureKind.SERVICE_ERROR -> DeepAuxOutcomeKind.SERVICE_ERROR
-        NdkAdvertisedEvidenceFailureKind.MALFORMED_METADATA,
+        NdkAdvertisedEvidenceFailureKind.ID_ENUMERATION_UNAVAILABLE,
+        NdkAdvertisedEvidenceFailureKind.SERVICE_ERROR,
         NdkAdvertisedEvidenceFailureKind.MALFORMED_NATIVE_PAYLOAD,
-        -> DeepAuxOutcomeKind.MALFORMED_METADATA
+        -> DeepAuxOutcomeKind.SERVICE_ERROR
+        NdkAdvertisedEvidenceFailureKind.INVALID_CAMERA_ID,
+        NdkAdvertisedEvidenceFailureKind.METADATA_UNAVAILABLE,
+        -> DeepAuxOutcomeKind.NOT_FOUND_OR_UNAVAILABLE
+        NdkAdvertisedEvidenceFailureKind.ACCESS_DENIED -> DeepAuxOutcomeKind.ACCESS_DENIED
+        NdkAdvertisedEvidenceFailureKind.CAMERA_UNAVAILABLE -> DeepAuxOutcomeKind.TEMPORARILY_UNAVAILABLE
+        NdkAdvertisedEvidenceFailureKind.INVALID_OPERATION -> DeepAuxOutcomeKind.INVALID_OPERATION
+        NdkAdvertisedEvidenceFailureKind.MALFORMED_METADATA -> DeepAuxOutcomeKind.MALFORMED_METADATA
         NdkAdvertisedEvidenceFailureKind.CAMERA_ID_LIMIT_EXCEEDED,
         NdkAdvertisedEvidenceFailureKind.METADATA_BOUND_EXCEEDED,
         -> DeepAuxOutcomeKind.BOUND_EXCEEDED
-        else -> DeepAuxOutcomeKind.NOT_FOUND_OR_UNAVAILABLE
     }
 
     private fun <T> immutableList(values: Collection<T>): List<T> =

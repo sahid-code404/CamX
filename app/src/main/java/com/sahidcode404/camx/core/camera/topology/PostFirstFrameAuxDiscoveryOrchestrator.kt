@@ -255,77 +255,68 @@ internal class PostFirstFrameAuxDiscoveryOrchestrator(
         val cachedIds = (cached?.sessionVerifiedDeepIds.orEmpty() + cached?.successfulDeepIds.orEmpty()).toSet()
         val certifiedIds = LinkedHashSet<String>()
         val retiredIds = LinkedHashSet<String>()
-        var temporaryFailure = false
-        var runtimeUnavailable = false
+        var temporaryInfrastructureFailure = false
         var credibleCachedIncompatibility = false
         val persistenceSignature = if (level2Reliable) signature else cached?.advertisedTopologySignature
 
-        ndkDeep.collect(request) { ndkReport ->
-            if (ndkReport.snapshot.evidence.isNotEmpty()) emit(listOf(ndkReport.snapshot))
-            ndkReport.outcomes.forEach { outcome ->
-                when (outcome.outcome) {
-                    DeepAuxOutcomeKind.RUNTIME_UNAVAILABLE -> runtimeUnavailable = true
-                    DeepAuxOutcomeKind.SERVICE_ERROR,
-                    DeepAuxOutcomeKind.ACCESS_DENIED,
-                    DeepAuxOutcomeKind.NOT_FOUND_OR_UNAVAILABLE,
-                    -> temporaryFailure = true
-                    DeepAuxOutcomeKind.MALFORMED_METADATA,
-                    DeepAuxOutcomeKind.BOUND_EXCEEDED,
-                    -> if (outcome.candidate.transportId in cachedIds) {
-                        credibleCachedIncompatibility = true
-                        retiredIds += outcome.candidate.transportId
-                    }
-                    DeepAuxOutcomeKind.VALID_METADATA -> Unit
-                }
-            }
-
-            javaDeep.certify(
-                ndkOutcomes = ndkReport.outcomes,
-                existingJavaEvidence = existingJavaEvidence,
-            ) { certification ->
-                if (certification.snapshot.evidence.isNotEmpty()) {
-                    emit(listOf(certification.snapshot))
-                    certification.snapshot.evidence.forEach(existingJavaEvidence::add)
-                }
-                certification.outcomes.forEach { outcome ->
-                    when (outcome.kind) {
-                        JavaDeepCertificationKind.CERTIFIED -> certifiedIds += outcome.candidate.transportId
-                        JavaDeepCertificationKind.JAVA_ACCESS_DENIED,
-                        JavaDeepCertificationKind.JAVA_METADATA_ERROR,
-                        JavaDeepCertificationKind.CANCELLED,
-                        -> temporaryFailure = true
-                        JavaDeepCertificationKind.JAVA_NOT_FOUND,
-                        JavaDeepCertificationKind.NO_PRIVATE_PREVIEW,
-                        JavaDeepCertificationKind.NO_FPS_EVIDENCE,
-                        JavaDeepCertificationKind.MISSING_ORIENTATION,
-                        JavaDeepCertificationKind.NON_PHOTOGRAPHIC,
-                        JavaDeepCertificationKind.BOUND_EXCEEDED,
-                        -> if (outcome.candidate.transportId in cachedIds) {
+        try {
+            ndkDeep.collect(request) { ndkReport ->
+                if (ndkReport.snapshot.evidence.isNotEmpty()) emit(listOf(ndkReport.snapshot))
+                ndkReport.outcomes.forEach { outcome ->
+                    when {
+                        outcome.outcome.isTemporaryInfrastructureFailure() -> temporaryInfrastructureFailure = true
+                        outcome.outcome.isConclusiveCachedIncompatibility() &&
+                            outcome.candidate.transportId in cachedIds -> {
                             credibleCachedIncompatibility = true
                             retiredIds += outcome.candidate.transportId
                         }
-                        JavaDeepCertificationKind.ALREADY_REPRESENTED -> Unit
                     }
                 }
-                val newlyCertified = certification.outcomes
-                    .filter { it.kind == JavaDeepCertificationKind.CERTIFIED }
-                    .map { it.candidate.transportId }
-                if (newlyCertified.isNotEmpty() && persistenceSignature != null) {
-                    deepKnowledge.recordSuccessful(
-                        environment = environment,
-                        advertisedTopologySignature = persistenceSignature,
-                        ids = newlyCertified,
-                        reconciliationComplete = hotOnly && cached?.fullReconciliationComplete == true,
-                    )
+
+                javaDeep.certify(
+                    ndkOutcomes = ndkReport.outcomes,
+                    existingJavaEvidence = existingJavaEvidence,
+                ) { certification ->
+                    if (certification.snapshot.evidence.isNotEmpty()) {
+                        emit(listOf(certification.snapshot))
+                        certification.snapshot.evidence.forEach(existingJavaEvidence::add)
+                    }
+                    certification.outcomes.forEach { outcome ->
+                        when {
+                            outcome.kind == JavaDeepCertificationKind.CERTIFIED -> {
+                                certifiedIds += outcome.candidate.transportId
+                            }
+                            outcome.kind.isTemporaryInfrastructureFailure() -> {
+                                temporaryInfrastructureFailure = true
+                            }
+                            outcome.kind.isConclusiveCachedIncompatibility() &&
+                                outcome.candidate.transportId in cachedIds -> {
+                                credibleCachedIncompatibility = true
+                                retiredIds += outcome.candidate.transportId
+                            }
+                        }
+                    }
+                    val newlyCertified = certification.outcomes
+                        .filter { it.kind == JavaDeepCertificationKind.CERTIFIED }
+                        .map { it.candidate.transportId }
+                    if (newlyCertified.isNotEmpty() && persistenceSignature != null) {
+                        deepKnowledge.recordSuccessful(
+                            environment = environment,
+                            advertisedTopologySignature = persistenceSignature,
+                            ids = newlyCertified,
+                            reconciliationComplete = hotOnly && cached?.fullReconciliationComplete == true,
+                        )
+                    }
                 }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            temporaryInfrastructureFailure = true
         }
 
-        val passComplete = if (runtimeApiLevel() < CAMERA_NDK_MIN_API_FOR_ORCHESTRATION) {
-            true
-        } else {
-            !runtimeUnavailable && !temporaryFailure
-        }
+        val passComplete = runtimeApiLevel() < CAMERA_NDK_MIN_API_FOR_ORCHESTRATION ||
+            !temporaryInfrastructureFailure
         return DeepPassResult(
             certifiedIds = immutableList(certifiedIds),
             retiredIds = immutableList(retiredIds),
@@ -370,6 +361,66 @@ internal class PostFirstFrameAuxDiscoveryOrchestrator(
                 report.runtimeState == NdkAdvertisedRuntimeState.NOT_RUN
         }
         return report.runtimeState == NdkAdvertisedRuntimeState.AVAILABLE && report.failures.isEmpty()
+    }
+
+    private fun DeepAuxOutcomeKind.isTemporaryInfrastructureFailure(): Boolean = when (this) {
+        DeepAuxOutcomeKind.SERVICE_ERROR,
+        DeepAuxOutcomeKind.TEMPORARILY_UNAVAILABLE,
+        DeepAuxOutcomeKind.RUNTIME_UNAVAILABLE,
+        -> true
+        DeepAuxOutcomeKind.VALID_METADATA,
+        DeepAuxOutcomeKind.NOT_FOUND_OR_UNAVAILABLE,
+        DeepAuxOutcomeKind.ACCESS_DENIED,
+        DeepAuxOutcomeKind.INVALID_OPERATION,
+        DeepAuxOutcomeKind.MALFORMED_METADATA,
+        DeepAuxOutcomeKind.BOUND_EXCEEDED,
+        -> false
+    }
+
+    private fun DeepAuxOutcomeKind.isConclusiveCachedIncompatibility(): Boolean = when (this) {
+        DeepAuxOutcomeKind.MALFORMED_METADATA,
+        DeepAuxOutcomeKind.BOUND_EXCEEDED,
+        -> true
+        DeepAuxOutcomeKind.VALID_METADATA,
+        DeepAuxOutcomeKind.NOT_FOUND_OR_UNAVAILABLE,
+        DeepAuxOutcomeKind.ACCESS_DENIED,
+        DeepAuxOutcomeKind.SERVICE_ERROR,
+        DeepAuxOutcomeKind.TEMPORARILY_UNAVAILABLE,
+        DeepAuxOutcomeKind.INVALID_OPERATION,
+        DeepAuxOutcomeKind.RUNTIME_UNAVAILABLE,
+        -> false
+    }
+
+    private fun JavaDeepCertificationKind.isTemporaryInfrastructureFailure(): Boolean = when (this) {
+        JavaDeepCertificationKind.JAVA_METADATA_ERROR,
+        JavaDeepCertificationKind.CANCELLED,
+        -> true
+        JavaDeepCertificationKind.CERTIFIED,
+        JavaDeepCertificationKind.JAVA_NOT_FOUND,
+        JavaDeepCertificationKind.JAVA_ACCESS_DENIED,
+        JavaDeepCertificationKind.NO_PRIVATE_PREVIEW,
+        JavaDeepCertificationKind.NO_FPS_EVIDENCE,
+        JavaDeepCertificationKind.MISSING_ORIENTATION,
+        JavaDeepCertificationKind.NON_PHOTOGRAPHIC,
+        JavaDeepCertificationKind.BOUND_EXCEEDED,
+        JavaDeepCertificationKind.ALREADY_REPRESENTED,
+        -> false
+    }
+
+    private fun JavaDeepCertificationKind.isConclusiveCachedIncompatibility(): Boolean = when (this) {
+        JavaDeepCertificationKind.JAVA_NOT_FOUND,
+        JavaDeepCertificationKind.NO_PRIVATE_PREVIEW,
+        JavaDeepCertificationKind.NO_FPS_EVIDENCE,
+        JavaDeepCertificationKind.MISSING_ORIENTATION,
+        JavaDeepCertificationKind.NON_PHOTOGRAPHIC,
+        JavaDeepCertificationKind.BOUND_EXCEEDED,
+        -> true
+        JavaDeepCertificationKind.CERTIFIED,
+        JavaDeepCertificationKind.JAVA_ACCESS_DENIED,
+        JavaDeepCertificationKind.JAVA_METADATA_ERROR,
+        JavaDeepCertificationKind.CANCELLED,
+        JavaDeepCertificationKind.ALREADY_REPRESENTED,
+        -> false
     }
 
     private fun advertisedOpaqueIds(snapshots: Collection<CameraEvidenceSnapshot>): List<String> =

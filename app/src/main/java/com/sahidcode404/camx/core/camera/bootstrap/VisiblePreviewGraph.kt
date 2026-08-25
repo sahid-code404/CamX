@@ -71,6 +71,8 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         capabilitySource = AndroidSelectedSeedPreviewCapabilityReader(cameraManager),
         surfacePort = surfaceBridge,
         session = AndroidVisiblePreviewSessionPort(controller),
+        topology = topologyRepository.topology,
+        runtimeApiLevel = Build.VERSION.SDK_INT,
         settings = { SettingsSnapshot() },
     )
 

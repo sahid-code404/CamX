@@ -115,7 +115,7 @@ class CameraTopologyResolverTest {
     }
 
     @Test
-    fun enrichmentPreservesTrustedCanonicalIdentityForSameRoute() {
+    fun enrichmentPromotesFallbackCanonicalIdentityButPreservesExactProfile() {
         val minimal = CameraTopologyResolver.resolve(
             environment,
             listOf(
@@ -138,7 +138,9 @@ class CameraTopologyResolverTest {
             10L,
             previousTrustedTopology = minimal,
         )
-        assertEquals(
+        org.junit.Assert.assertTrue(minimal.canonicalLenses.single().fingerprint.value.startsWith("lens:fallback:"))
+        org.junit.Assert.assertTrue(enriched.canonicalLenses.single().fingerprint.value.startsWith("lens:optical:"))
+        org.junit.Assert.assertNotEquals(
             minimal.canonicalLenses.single().fingerprint,
             enriched.canonicalLenses.single().fingerprint,
         )

@@ -62,10 +62,10 @@ class LensProfileRankerAndFailoverTest {
     }
 
     @Test
-    fun `deep direct outranks unverified physical when trust equal`() {
+    fun `physical outranks unverified deep direct when trust equal`() {
         val deep = target("deep", CameraRouteSource.JAVA_DEEP_PROBED)
         val physical = target("physical", CameraRouteSource.JAVA_PHYSICAL, physical = true)
-        assertEquals("deep", LensProfileRanker.rank(listOf(physical, deep), null, false).first().routeId.value)
+        assertEquals("physical", LensProfileRanker.rank(listOf(physical, deep), null, false).first().routeId.value)
     }
 
     @Test

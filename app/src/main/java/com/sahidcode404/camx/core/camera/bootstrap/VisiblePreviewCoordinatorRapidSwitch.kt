@@ -81,6 +81,9 @@ internal class VisiblePreviewRapidSwitchState(
 
     fun observe(state: CameraEngineState) {
         if (latestTapNs == null) return
+        val latest = latestRequestedLens
+        val observedLens = stateCanonicalLens(state)
+        if (latest != null && observedLens != null && observedLens != latest) return
         when (state) {
             is CameraEngineState.Opening -> {
                 val key = buildString {
@@ -140,5 +143,17 @@ internal class VisiblePreviewRapidSwitchState(
     private fun elapsed(start: Long?, end: Long?): Long? {
         if (start == null || end == null || end < start) return null
         return (end - start) / 1_000_000L
+    }
+
+    private fun stateCanonicalLens(state: CameraEngineState): CanonicalLensFingerprint? = when (state) {
+        is CameraEngineState.WaitingForSurface -> state.selection?.canonicalLensFingerprint
+        is CameraEngineState.Opening -> state.selection.canonicalLensFingerprint
+        is CameraEngineState.ConfiguringPreview -> state.selection.canonicalLensFingerprint
+        is CameraEngineState.Previewing -> state.selection.canonicalLensFingerprint
+        is CameraEngineState.Switching -> state.to.canonicalLensFingerprint
+        is CameraEngineState.Pausing -> state.selection?.canonicalLensFingerprint
+        is CameraEngineState.RecoverableError -> state.selection?.canonicalLensFingerprint
+        is CameraEngineState.StructuralError -> state.selection.canonicalLensFingerprint
+        else -> null
     }
 }

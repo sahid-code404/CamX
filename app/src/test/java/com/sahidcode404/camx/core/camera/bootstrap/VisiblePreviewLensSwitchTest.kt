@@ -294,7 +294,9 @@ class VisiblePreviewLensSwitchTest {
         }
 
         override suspend fun surfaceInvalidated(identity: PreviewSurfaceIdentity) {
-            activeLease?.close()
+            val lease = activeLease ?: return
+            if (lease.identity != identity) return
+            lease.close()
             activeLease = null
             stateFlow.value = CameraEngineState.WaitingForSurface(starts.lastOrNull()?.selection)
         }

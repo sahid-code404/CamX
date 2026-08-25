@@ -23,6 +23,16 @@ class CameraTopologyRepository(initial: CameraTopologySnapshot? = null) {
 
     val topology: StateFlow<CameraTopologySnapshot?> = mutableTopology.asStateFlow()
 
+    /** Seeds compatible cached authority before the first live reconciliation starts. */
+    @Synchronized
+    fun seedFromCache(snapshot: CameraTopologySnapshot): Boolean {
+        if (activeReconciliation != 0L || snapshot.schema != CameraSchemaVersions.TOPOLOGY) return false
+        if (activeEnvironment != null && activeEnvironment != snapshot.environment) return false
+        activeEnvironment = snapshot.environment
+        mutableTopology.value = snapshot.frozenCopy()
+        return true
+    }
+
     @Synchronized
     fun beginReconciliation(environment: CameraEnvironmentFingerprint): TopologyPublicationPermit {
         check(activeReconciliation < Long.MAX_VALUE) { "Topology reconciliation sequence exhausted" }

@@ -4,6 +4,15 @@ object CameraSchemaVersions {
     const val HOT_START = 1
     const val TOPOLOGY = 1
     const val DEEP_DISCOVERY = 1
+    const val LENS_REFERENCE = 1
+}
+
+data class StableLensReferenceSnapshot(
+    val schema: Int,
+    val environment: CameraEnvironmentFingerprint,
+    val canonicalFingerprint: CanonicalLensFingerprint,
+) {
+    init { require(schema > 0) { "Lens-reference schema must be positive" } }
 }
 
 data class HotStartSnapshot(

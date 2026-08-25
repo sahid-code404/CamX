@@ -118,6 +118,7 @@ class VisiblePreviewCoordinator internal constructor(
     private val surfacePort: VisiblePreviewSurfacePort,
     private val session: VisiblePreviewSessionPort,
     private val topology: StateFlow<CameraTopologySnapshot?> = MutableStateFlow(null),
+    private val stableOneXReference: StateFlow<CanonicalLensFingerprint?> = MutableStateFlow(null),
     private val runtimeApiLevel: Int = 23,
     private val settings: () -> SettingsSnapshot = { SettingsSnapshot() },
     private val mirrorFrontPreview: () -> Boolean = { true },
@@ -153,6 +154,11 @@ class VisiblePreviewCoordinator internal constructor(
         }
         scope.launch {
             topology.collect {
+                refreshLensProjection()
+            }
+        }
+        scope.launch {
+            stableOneXReference.collect {
                 refreshLensProjection()
             }
         }
@@ -610,6 +616,7 @@ class VisiblePreviewCoordinator internal constructor(
             activeSelection = activeSelection,
             statusByLens = statusByLens,
             structurallyFailedProfiles = structurallyFailedProfiles,
+            stableOneXReferenceFingerprint = stableOneXReference.value,
         ),
     )
 

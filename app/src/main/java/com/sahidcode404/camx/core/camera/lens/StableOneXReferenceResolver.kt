@@ -25,10 +25,12 @@ internal object StableOneXReferenceResolver {
         topology: CameraTopologySnapshot,
         candidates: List<CanonicalLens>,
         preferred: CanonicalLensFingerprint? = null,
+        runtimeApiLevel: Int? = null,
     ): CanonicalLensFingerprint? {
         val eligible = candidates.filter { lens ->
             lens.facing == LensFacing.BACK &&
                 !CanonicalLensTrustAggregator.aggregate(lens).structurallyUnavailable &&
+                isSelectableOnApi(topology, lens, runtimeApiLevel) &&
                 opticalScore(topology, lens) != null
         }
         preferred?.let { fingerprint ->
@@ -43,6 +45,17 @@ internal object StableOneXReferenceResolver {
                 .thenBy { it.score.sensorEvidence }
                 .thenBy { it.fingerprint.value },
         )?.fingerprint
+    }
+
+    private fun isSelectableOnApi(
+        topology: CameraTopologySnapshot,
+        lens: CanonicalLens,
+        runtimeApiLevel: Int?,
+    ): Boolean {
+        val api = runtimeApiLevel ?: return true
+        return lens.profiles.any { profile ->
+            LensProfileEligibilityResolver.resolve(topology, lens, profile, api) is LensProfileEligibility.Eligible
+        }
     }
 
     private data class Candidate(

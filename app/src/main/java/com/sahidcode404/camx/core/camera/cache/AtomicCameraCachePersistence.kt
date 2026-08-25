@@ -4,6 +4,7 @@ import android.system.Os
 import com.sahidcode404.camx.core.camera.model.CameraEnvironmentFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraTopologySnapshot
 import com.sahidcode404.camx.core.camera.model.HotStartSnapshot
+import com.sahidcode404.camx.core.camera.model.StableLensReferenceSnapshot
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -15,7 +16,7 @@ enum class DiscoveryCacheResetResult {
     NOTHING_TO_RESET,
 }
 
-/** API-23-safe atomic persistence for hot, topology, and bounded deep-discovery records. */
+/** API-23-safe atomic persistence for hot, topology, lens-reference, and bounded deep-discovery records. */
 class AtomicCameraCachePersistence internal constructor(
     private val directory: File,
     private val fileSystem: CacheFileSystem = RealCacheFileSystem,
@@ -32,6 +33,13 @@ class AtomicCameraCachePersistence internal constructor(
             TopologyCacheCodec.decode(it, environment)
         }
 
+    internal suspend fun readStableLensReference(
+        environment: CameraEnvironmentFingerprint,
+    ): CacheRead<StableLensReferenceSnapshot> =
+        readBounded(referenceFile, CacheBounds.REFERENCE_FILE_BYTES) {
+            StableLensReferenceCacheCodec.decode(it, environment)
+        }
+
     internal suspend fun readDeepKnowledgeInternal(
         environment: CameraEnvironmentFingerprint,
     ): CacheRead<DeepDiscoveryKnowledge> =
@@ -45,10 +53,13 @@ class AtomicCameraCachePersistence internal constructor(
     override suspend fun writeTopology(snapshot: CameraTopologySnapshot): CacheWrite =
         encodeAndWrite(topologyFile, topologyTempFile) { TopologyCacheCodec.encode(snapshot) }
 
+    internal suspend fun writeStableLensReference(snapshot: StableLensReferenceSnapshot): CacheWrite =
+        encodeAndWrite(referenceFile, referenceTempFile) { StableLensReferenceCacheCodec.encode(snapshot) }
+
     internal suspend fun writeDeepKnowledgeInternal(knowledge: DeepDiscoveryKnowledge): CacheWrite =
         encodeAndWrite(deepFile, deepTempFile) { DeepDiscoveryKnowledgeCodec.encode(knowledge) }
 
-    /** Clears only topology/deep discovery persistence. User settings and the hot preview cache stay intact. */
+    /** Clears discovery evidence only. Stable user/reference identity and the hot preview cache survive. */
     internal suspend fun resetDiscoveryCaches(): DiscoveryCacheResetResult {
         val targets = listOf(topologyFile, topologyTempFile, deepFile, deepTempFile)
         return try {
@@ -66,9 +77,11 @@ class AtomicCameraCachePersistence internal constructor(
 
     private val hotFile: File get() = File(directory, HOT_FILE_NAME)
     private val deepFile: File get() = File(directory, DEEP_FILE_NAME)
+    private val referenceFile: File get() = File(directory, REFERENCE_FILE_NAME)
     private val topologyFile: File get() = File(directory, TOPOLOGY_FILE_NAME)
     private val hotTempFile: File get() = File(directory, "$HOT_FILE_NAME.tmp")
     private val deepTempFile: File get() = File(directory, "$DEEP_FILE_NAME.tmp")
+    private val referenceTempFile: File get() = File(directory, "$REFERENCE_FILE_NAME.tmp")
     private val topologyTempFile: File get() = File(directory, "$TOPOLOGY_FILE_NAME.tmp")
 
     private fun <T> readBounded(
@@ -147,6 +160,7 @@ class AtomicCameraCachePersistence internal constructor(
     private companion object {
         const val HOT_FILE_NAME = "camx-hot.cache"
         const val DEEP_FILE_NAME = "camx-deep.cache"
+        const val REFERENCE_FILE_NAME = "camx-lens-reference.cache"
         const val TOPOLOGY_FILE_NAME = "camx-topology.cache"
     }
 }

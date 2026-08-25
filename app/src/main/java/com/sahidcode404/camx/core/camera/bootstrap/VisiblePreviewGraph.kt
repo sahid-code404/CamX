@@ -6,6 +6,8 @@ import android.os.Build
 import android.os.SystemClock
 import com.sahidcode404.camx.core.camera.cache.AtomicCameraCachePersistence
 import com.sahidcode404.camx.core.camera.cache.AtomicDeepDiscoveryKnowledgePersistence
+import com.sahidcode404.camx.core.camera.cache.CacheRead
+import com.sahidcode404.camx.core.camera.cache.CameraCacheRepository
 import com.sahidcode404.camx.core.camera.cache.DeepDiscoveryKnowledgeRepository
 import com.sahidcode404.camx.core.camera.cache.DiscoveryCacheResetResult
 import com.sahidcode404.camx.core.camera.diagnostics.AuxDiscoveryAuditTracker
@@ -88,6 +90,11 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     private val cachePersistence = AtomicCameraCachePersistence(
         File(appContext.filesDir, "camera-cache"),
     )
+    private val cameraCacheRepository = CameraCacheRepository(cachePersistence)
+    private val lensInventory = LensInventoryCoordinator(
+        environment = environment,
+        runtimeApiLevel = Build.VERSION.SDK_INT,
+    )
     private val deepKnowledgeRepository = DeepDiscoveryKnowledgeRepository(
         AtomicDeepDiscoveryKnowledgePersistence(cachePersistence),
     )
@@ -148,6 +155,11 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
             auxDiscoveryOrchestrator.collect(emit)
         } finally {
             auditTracker.finishRun()
+            if (!explicitDeepRescanRequested.get()) {
+                persistInventoryCompletion(
+                    lensInventory.completeAutomaticReconciliation(topologyRepository.topology.value),
+                )
+            }
         }
     }
 
@@ -162,7 +174,8 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         capabilitySource = AndroidSelectedSeedPreviewCapabilityReader(cameraManager),
         surfacePort = surfaceBridge,
         session = AndroidVisiblePreviewSessionPort(controller),
-        topology = topologyRepository.topology,
+        topology = lensInventory.topology,
+        stableOneXReference = lensInventory.stableOneXReference,
         runtimeApiLevel = Build.VERSION.SDK_INT,
         settings = { SettingsSnapshot() },
     )
@@ -190,8 +203,28 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     )
 
     init {
+        // Cache IO begins immediately but never blocks Camera2 ownership or the switch hot path.
+        topologySignalScope.launch(Dispatchers.IO) {
+            val topologyRead = cameraCacheRepository.loadTopology(environment)
+            if (topologyRead is CacheRead.Hit) {
+                val referenceRead = cachePersistence.readStableLensReference(environment)
+                val persistedReference = (referenceRead as? CacheRead.Hit)?.value?.canonicalFingerprint
+                val completion = lensInventory.acceptCompatibleCache(
+                    snapshot = topologyRead.value,
+                    persistedReference = persistedReference,
+                )
+                if (completion.structuralPublished) {
+                    topologyRepository.seedFromCache(topologyRead.value)
+                    val elected = completion.referenceToPersist
+                    if (elected != null && elected.canonicalFingerprint != persistedReference) {
+                        cachePersistence.writeStableLensReference(elected)
+                    }
+                }
+            }
+        }
         // Only a verified first frame arms Level-2/Level-4 discovery. Metadata work is independent of
-        // the camera dispatcher and each topology improvement only refreshes lens availability.
+        // the camera dispatcher and each topology improvement only refreshes diagnostics until the
+        // inventory coordinator reaches one coherent publication point.
         topologySignalScope.launch {
             coordinator.uiState.collect { state ->
                 if (state is VisiblePreviewUiState.Previewing && state.firstFrameVerified) {
@@ -222,6 +255,7 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         }
         topologySignalScope.launch {
             topologyRepository.topology.collect { snapshot ->
+                lensInventory.observeCandidate(snapshot)
                 if (snapshot != null) {
                     val validProfiles = snapshot.canonicalLenses.asSequence()
                         .flatMap { it.profiles.asSequence() }
@@ -276,6 +310,11 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         coordinator.requestShutdown()
     }
 
+    private suspend fun persistInventoryCompletion(completion: LensInventoryCompletion) {
+        completion.topologyToPersist?.let { cameraCacheRepository.replaceTopology(it) }
+        completion.referenceToPersist?.let { cachePersistence.writeStableLensReference(it) }
+    }
+
     private fun refreshAudit(projection: CameraLensProjection = currentAuditProjection()) {
         mutableAuxAudit.value = AuxHardwareAudit.build(
             topology = topologyRepository.topology.value,
@@ -295,6 +334,7 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
                 activeSelection = active,
                 statusByLens = status,
                 structurallyFailedProfiles = failed,
+                stableOneXReferenceFingerprint = lensInventory.stableOneXReference.value,
             ),
         )
     }

@@ -69,13 +69,17 @@ internal object DeepAuxCandidatePlanner {
         val radius = request.limits.neighborRadius.coerceIn(0, DEEP_AUX_HARD_NEIGHBOR_RADIUS)
         val selected = LinkedHashMap<String, DeepAuxWave>(maximum)
 
+        fun addCandidateIfAbsent(id: String, wave: DeepAuxWave) {
+            if (selected.size < maximum && !selected.containsKey(id)) selected[id] = wave
+        }
+
         fun addExact(values: Collection<String>, wave: DeepAuxWave) {
             values.asSequence()
                 .take(DEEP_AUX_MAX_INPUT_IDS)
                 .filter(::isSafeExactId)
                 .distinct()
                 .sortedWith(opaqueComparator)
-                .forEach { id -> if (selected.size < maximum) selected.putIfAbsent(id, wave) }
+                .forEach { id -> addCandidateIfAbsent(id, wave) }
         }
 
         // Learned exact opaque IDs are hot even when they are nonnumeric.
@@ -90,7 +94,7 @@ internal object DeepAuxCandidatePlanner {
             .sorted()
             .toList()
         advertisedNumeric.forEach { value ->
-            if (selected.size < maximum) selected.putIfAbsent(value.toString(), DeepAuxWave.NEARBY)
+            addCandidateIfAbsent(value.toString(), DeepAuxWave.NEARBY)
         }
 
         val knownNumeric = sequenceOf(
@@ -108,14 +112,14 @@ internal object DeepAuxCandidatePlanner {
             for (distance in 1..radius) {
                 val below = known - distance
                 val above = known + distance
-                if (below >= 0 && selected.size < maximum) selected.putIfAbsent(below.toString(), DeepAuxWave.NEARBY)
-                if (above <= maximumNumeric && selected.size < maximum) selected.putIfAbsent(above.toString(), DeepAuxWave.NEARBY)
+                if (below >= 0) addCandidateIfAbsent(below.toString(), DeepAuxWave.NEARBY)
+                if (above <= maximumNumeric) addCandidateIfAbsent(above.toString(), DeepAuxWave.NEARBY)
             }
         }
 
         for (value in 0..lowMax) {
             if (selected.size >= maximum) break
-            selected.putIfAbsent(value.toString(), DeepAuxWave.LOW_NAMESPACE)
+            addCandidateIfAbsent(value.toString(), DeepAuxWave.LOW_NAMESPACE)
         }
         return DeepAuxPlan(immutableList(selected.map { DeepAuxCandidate(it.key, it.value) }))
     }

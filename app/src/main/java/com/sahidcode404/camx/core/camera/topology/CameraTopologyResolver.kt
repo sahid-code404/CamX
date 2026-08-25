@@ -65,19 +65,19 @@ object CameraTopologyResolver {
             .orEmpty()
         val previousEvidenceByTransport = compatiblePreviousTopology
             ?.evidence
-            ?.groupBy(CameraMetadataEvidence::transportKey)
+            ?.groupBy { it.transportKey() }
             .orEmpty()
 
         val routesWithEvidence = ArrayList<Pair<CameraRoute, List<CameraMetadataEvidence>>>()
         val transportGroups = evidence
-            .groupBy(CameraMetadataEvidence::transportKey)
+            .groupBy { it.transportKey() }
             .entries
             .sortedWith(compareBy({ opaqueKey(it.key.transportId) }, { opaqueKey(it.key.physicalId.orEmpty()) }))
 
         for ((transportKey, values) in transportGroups) {
             val clusters = compatibilityClusters(values)
                 .sortedWith(compareBy(
-                    { cluster -> cluster.minOf(CameraMetadataEvidence::sourcePriority) },
+                    { cluster -> cluster.minOf { it.sourcePriority() } },
                     { cluster -> clusterFingerprint(cluster) },
                 ))
             for ((clusterIndex, cluster) in clusters.withIndex()) {
@@ -90,7 +90,7 @@ object CameraTopologyResolver {
                 } else {
                     "$normalIdentity|conflict|${clusterFingerprint(cluster)}|$clusterIndex"
                 }
-                val preferred = cluster.minBy(CameraMetadataEvidence::sourcePriority)
+                val preferred = cluster.minBy { it.sourcePriority() }
                 val advertised = CameraRoute(
                     id = CameraRouteId("route:${stableHash(routeIdentity)}"),
                     source = preferred.source,
@@ -338,8 +338,8 @@ object CameraTopologyResolver {
     }
 
     private fun clusterFingerprint(values: List<CameraMetadataEvidence>): String = stableHash(
-        values.sortedBy(CameraMetadataEvidence::deterministicKey)
-            .joinToString("||", transform = CameraMetadataEvidence::deterministicKey),
+        values.sortedBy { it.deterministicKey() }
+            .joinToString("||") { it.deterministicKey() },
     )
 
     private fun mergeCapabilities(values: List<CameraCapabilities>): CameraCapabilities {

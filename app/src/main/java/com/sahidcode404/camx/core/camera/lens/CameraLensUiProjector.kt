@@ -1,12 +1,10 @@
 package com.sahidcode404.camx.core.camera.lens
 
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
-import com.sahidcode404.camx.core.camera.model.CameraMetadataEvidence
 import com.sahidcode404.camx.core.camera.model.CameraProfile
 import com.sahidcode404.camx.core.camera.model.CameraProfileFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraRoute
 import com.sahidcode404.camx.core.camera.model.CameraRouteId
-import com.sahidcode404.camx.core.camera.model.CameraRouteSource
 import com.sahidcode404.camx.core.camera.model.CameraTopologySnapshot
 import com.sahidcode404.camx.core.camera.model.CanonicalLens
 import com.sahidcode404.camx.core.camera.model.CanonicalLensFingerprint
@@ -50,6 +48,7 @@ internal data class LensSelectionTarget(
 internal data class CameraLensProjection(
     val items: List<CameraLensUiItem>,
     val targets: Map<CanonicalLensFingerprint, LensSelectionTarget>,
+    val eligibilityByProfile: Map<CameraProfileFingerprint, LensProfileEligibility> = emptyMap(),
 )
 
 internal data class CameraLensProjectionInput(
@@ -59,20 +58,38 @@ internal data class CameraLensProjectionInput(
     val statusByLens: Map<CanonicalLensFingerprint, LensTestStatus> = emptyMap(),
 )
 
-/** Pure, deterministic CAMX-107 topology -> lens-test projection. */
+/** Pure, deterministic CAMX-107 topology -> one-button-per-canonical-lens projection. */
 internal object CameraLensUiProjector {
     fun project(input: CameraLensProjectionInput): CameraLensProjection {
-        val topology = input.topology ?: return CameraLensProjection(emptyList(), emptyMap())
+        val topology = input.topology ?: return CameraLensProjection(emptyList(), emptyMap(), emptyMap())
         val activeProfile = input.activeSelection?.routeId?.let { activeRouteId ->
             topology.canonicalLenses.asSequence()
                 .flatMap { lens -> lens.profiles.asSequence() }
                 .firstOrNull { profile -> profile.route.id == activeRouteId }
         }
+        val eligibilityByProfile = LinkedHashMap<CameraProfileFingerprint, LensProfileEligibility>()
 
         val works = topology.canonicalLenses.mapNotNull { lens ->
-            val target = chooseTarget(topology, lens, input.runtimeApiLevel, activeProfile, input.statusByLens)
+            val candidates = lens.profiles.mapNotNull { profile ->
+                when (val eligibility = LensProfileEligibilityResolver.resolve(
+                    topology = topology,
+                    lens = lens,
+                    profile = profile,
+                    runtimeApiLevel = input.runtimeApiLevel,
+                )) {
+                    is LensProfileEligibility.Eligible -> {
+                        eligibilityByProfile[profile.fingerprint] = eligibility
+                        eligibility.target
+                    }
+                    is LensProfileEligibility.Rejected -> {
+                        eligibilityByProfile[profile.fingerprint] = eligibility
+                        null
+                    }
+                }
+            }
+            val target = chooseTarget(lens, candidates, activeProfile, input.statusByLens)
                 ?: return@mapNotNull null
-            val optical = opticalEvidence(topology, target.route)
+            val optical = opticalEvidence(topology, target)
             LensWork(
                 lens = lens,
                 target = target,
@@ -104,19 +121,19 @@ internal object CameraLensUiProjector {
                 status = work.status,
             )
         }
-        return CameraLensProjection(items = items, targets = targets)
+        return CameraLensProjection(
+            items = items,
+            targets = targets,
+            eligibilityByProfile = eligibilityByProfile,
+        )
     }
 
     private fun chooseTarget(
-        topology: CameraTopologySnapshot,
         lens: CanonicalLens,
-        runtimeApiLevel: Int,
+        candidates: List<LensSelectionTarget>,
         activeProfile: CameraProfile?,
         statusByLens: Map<CanonicalLensFingerprint, LensTestStatus>,
     ): LensSelectionTarget? {
-        val candidates = lens.profiles.mapNotNull { profile ->
-            previewTarget(topology, lens, profile, runtimeApiLevel)
-        }
         if (candidates.isEmpty()) return null
         val activeVerified = activeProfile
             ?.takeIf { it.canonicalFingerprint == lens.fingerprint }
@@ -131,45 +148,6 @@ internal object CameraLensUiProjector {
         )
     }
 
-    private fun previewTarget(
-        topology: CameraTopologySnapshot,
-        lens: CanonicalLens,
-        profile: CameraProfile,
-        runtimeApiLevel: Int,
-    ): LensSelectionTarget? {
-        val route = profile.route
-        val controllable = if (route.physicalCameraId == null) {
-            CameraRouteSource.JAVA_PUBLIC in route.sources
-        } else {
-            runtimeApiLevel >= 28 && CameraRouteSource.JAVA_PHYSICAL in route.sources
-        }
-        if (!controllable || route.capabilities.previewStreams.isEmpty()) return null
-        val evidence = topology.evidence.filter { it.matches(route) }
-        val orientations = evidence.mapNotNull { it.sensorOrientationDegrees }.distinct()
-        val orientation = orientations.singleOrNull() ?: return null
-        val evidenceFacings = evidence.map { it.facing }
-            .filterNot { it == LensFacing.UNKNOWN }
-            .distinct()
-        val facing = when {
-            lens.facing != LensFacing.UNKNOWN -> lens.facing
-            evidenceFacings.size == 1 -> evidenceFacings.single()
-            else -> LensFacing.UNKNOWN
-        }
-        return LensSelectionTarget(
-            canonicalFingerprint = lens.fingerprint,
-            profileFingerprint = profile.fingerprint,
-            routeId = route.id,
-            route = route,
-            previewMetadata = LensPreviewMetadata(
-                sensorOrientationDegrees = orientation,
-                lensFacing = facing,
-            ),
-        )
-    }
-
-    private fun CameraMetadataEvidence.matches(route: CameraRoute): Boolean =
-        transportId == route.openCameraId && physicalId == route.physicalCameraId
-
     private data class OpticalEvidence(
         val focalMillimetres: Float?,
         val metric: Double?,
@@ -182,8 +160,12 @@ internal object CameraLensUiProjector {
         val status: LensTestStatus,
     )
 
-    private fun opticalEvidence(topology: CameraTopologySnapshot, route: CameraRoute): OpticalEvidence {
-        val evidence = topology.evidence.filter { it.matches(route) }
+    private fun opticalEvidence(topology: CameraTopologySnapshot, target: LensSelectionTarget): OpticalEvidence {
+        val evidence = LensProfileEligibilityResolver.compatiblePreviewEvidence(
+            topology = topology,
+            route = target.route,
+            metadata = target.previewMetadata,
+        )
         if (evidence.any { it.focalLengthsMillimetres.size > 1 }) return OpticalEvidence(null, null)
         val focals = evidence.asSequence()
             .filter { it.focalLengthsMillimetres.size == 1 }

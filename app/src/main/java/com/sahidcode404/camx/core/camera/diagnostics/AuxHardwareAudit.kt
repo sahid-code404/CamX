@@ -109,6 +109,7 @@ data class AuxDeepCandidateAudit(
 data class AuxHardwareAuditSnapshot(
     val counters: AuxDiscoveryPipelineCounters = AuxDiscoveryPipelineCounters(),
     val cache: AuxCacheAudit = AuxCacheAudit(),
+    val switch: LensSwitchDiagnostics = LensSwitchDiagnostics(),
     val resolvedRoutes: Int = 0,
     val resolvedProfiles: Int = 0,
     val canonicalLenses: Int = 0,
@@ -376,11 +377,13 @@ internal object AuxHardwareAudit {
         projection: CameraLensProjection,
         tracker: AuxDiscoveryTrackerSnapshot,
         cache: AuxCacheAudit = AuxCacheAudit(),
+        switch: LensSwitchDiagnostics = LensSwitchDiagnostics(),
     ): AuxHardwareAuditSnapshot {
         if (topology == null) {
             return AuxHardwareAuditSnapshot(
                 counters = tracker.counters,
                 cache = cache,
+                switch = switch,
                 deepRescanResult = tracker.deepRescanResult,
                 cacheResetResult = tracker.cacheResetResult,
             )
@@ -476,6 +479,7 @@ internal object AuxHardwareAudit {
         return AuxHardwareAuditSnapshot(
             counters = tracker.counters,
             cache = cache,
+            switch = switch,
             resolvedRoutes = topology.routes.size,
             resolvedProfiles = profiles,
             canonicalLenses = topology.canonicalLenses.size,

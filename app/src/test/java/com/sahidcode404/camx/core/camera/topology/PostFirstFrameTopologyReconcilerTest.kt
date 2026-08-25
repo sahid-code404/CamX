@@ -9,6 +9,7 @@ import com.sahidcode404.camx.core.camera.model.CameraTransportId
 import com.sahidcode404.camx.core.camera.model.LensFacing
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -51,28 +52,32 @@ class PostFirstFrameTopologyReconcilerTest {
         reconciler.close()
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
     fun `providers run concurrently rather than one after another`() = runTest {
         val repository = CameraTopologyRepository()
-        val firstMayFinish = CompletableDeferred<Unit>()
-        var firstWaiting = false
-        var secondStarted = false
+        val firstSuspended = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        var firstResumed = false
+        var secondRanWhileFirstSuspended = false
         val reconciler = PostFirstFrameTopologyReconciler(
             environment = environment,
             repository = repository,
             providers = listOf(
                 AdvertisedTopologyEvidenceProvider { emit ->
                     emit(listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, evidence("java"))))
-                    firstWaiting = true
-                    firstMayFinish.await()
+                    firstSuspended.complete(Unit)
+                    releaseFirst.await()
+                    firstResumed = true
                 },
                 AdvertisedTopologyEvidenceProvider { emit ->
-                    secondStarted = true
+                    firstSuspended.await()
+                    secondRanWhileFirstSuspended = !firstResumed && !releaseFirst.isCompleted
                     emit(listOf(snapshot(
                         CameraRouteSource.NDK_ADVERTISED,
                         evidence("ndk", CameraRouteSource.NDK_ADVERTISED),
                     )))
-                    firstMayFinish.complete(Unit)
+                    releaseFirst.complete(Unit)
                 },
             ),
             dispatcher = StandardTestDispatcher(testScheduler),
@@ -80,9 +85,14 @@ class PostFirstFrameTopologyReconcilerTest {
 
         reconciler.startAfterFirstFrame()
         advanceUntilIdle()
+        val observedConcurrentStart = secondRanWhileFirstSuspended
 
-        assertTrue(firstWaiting)
-        assertTrue(secondStarted)
+        if (!releaseFirst.isCompleted) releaseFirst.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(firstSuspended.isCompleted)
+        assertTrue(observedConcurrentStart)
+        assertTrue(firstResumed)
         assertEquals(2L, repository.publicationCount())
         assertEquals(setOf("java", "ndk"), repository.topology.value!!.routes.map { it.openCameraId.value }.toSet())
         reconciler.close()

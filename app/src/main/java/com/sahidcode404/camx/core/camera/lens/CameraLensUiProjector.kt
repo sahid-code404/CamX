@@ -49,6 +49,7 @@ internal data class CameraLensProjection(
     val targets: Map<CanonicalLensFingerprint, LensSelectionTarget>,
     val eligibilityByProfile: Map<CameraProfileFingerprint, LensProfileEligibility> = emptyMap(),
     val rankedTargetsByLens: Map<CanonicalLensFingerprint, List<LensSelectionTarget>> = emptyMap(),
+    val stableOneXReferenceFingerprint: CanonicalLensFingerprint? = null,
 )
 
 internal data class CameraLensProjectionInput(
@@ -57,6 +58,7 @@ internal data class CameraLensProjectionInput(
     val activeSelection: ActiveCameraSelection?,
     val statusByLens: Map<CanonicalLensFingerprint, LensTestStatus> = emptyMap(),
     val structurallyFailedProfiles: Set<CameraProfileFingerprint> = emptySet(),
+    val stableOneXReferenceFingerprint: CanonicalLensFingerprint? = null,
 )
 
 /** Pure, deterministic CAMX-107 topology -> one-button-per-canonical-lens projection. */
@@ -93,24 +95,32 @@ internal object CameraLensUiProjector {
             )
             rankedTargetsByLens[lens.fingerprint] = ranked
             val target = ranked.firstOrNull() ?: return@mapNotNull null
-            val optical = opticalEvidence(topology, lens)
             LensWork(
                 lens = lens,
                 target = target,
-                optical = optical,
+                optical = opticalEvidence(topology, lens),
                 status = presentationStatus(
                     input.statusByLens[lens.fingerprint] ?: LensTestStatus.AVAILABLE,
                 ),
             )
         }
         val ordered = works.sortedWith(lensOrder())
-        val activeWork = ordered.firstOrNull { work ->
-            work.status == LensTestStatus.VERIFIED &&
-                work.lens.facing == LensFacing.BACK &&
-                input.activeSelection?.routeId == work.target.routeId &&
-                work.optical.metric != null
+        val shouldResolveReference = input.stableOneXReferenceFingerprint != null ||
+            ordered.any { work ->
+                work.status == LensTestStatus.VERIFIED || work.status == LensTestStatus.OPENING
+            }
+        val stableReference = if (shouldResolveReference) {
+            StableOneXReferenceResolver.resolve(
+                topology = topology,
+                candidates = ordered.map { it.lens },
+                preferred = input.stableOneXReferenceFingerprint,
+            )
+        } else {
+            null
         }
-        val referenceMetric = activeWork?.optical?.metric
+        val referenceMetric = stableReference?.let { reference ->
+            ordered.firstOrNull { it.lens.fingerprint == reference }?.optical?.metric
+        }
 
         val targets = LinkedHashMap<CanonicalLensFingerprint, LensSelectionTarget>(ordered.size)
         val items = ordered.map { work ->
@@ -132,6 +142,7 @@ internal object CameraLensUiProjector {
             targets = targets,
             eligibilityByProfile = eligibilityByProfile,
             rankedTargetsByLens = rankedTargetsByLens,
+            stableOneXReferenceFingerprint = stableReference,
         )
     }
 

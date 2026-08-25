@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.sahidcode404.camx.core.camera.bootstrap.LensInventoryStatus
+import com.sahidcode404.camx.core.camera.cache.TopologyCacheMigrationAudit
 import com.sahidcode404.camx.core.camera.diagnostics.AuxHardwareAuditSnapshot
 
 @Composable
@@ -28,6 +29,7 @@ internal fun AuxHardwareAuditPanel(
     onResetDiscoveryCache: () -> Unit,
 ) {
     val counters = audit.counters
+    val cache = TopologyCacheMigrationAudit.snapshot()
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -57,6 +59,16 @@ internal fun AuxHardwareAuditPanel(
             timingLine("Last refresh completion", inventory.lastRefreshCompletionLatencyMs)
             auditLine("Last refresh outcome", inventory.lastRefreshOutcome?.name ?: "none")
         }
+
+        Text("Topology cache", color = Color.White)
+        auditLine("Current topology schema", cache.currentTopologySchema)
+        auditLine("Stored topology schema", cache.storedTopologySchema ?: "none")
+        auditLine("Cache status", cache.status)
+        auditLine("Cache migrated this launch", cache.migrated)
+        auditLine(
+            "Environment compatible",
+            cache.environmentCompatible?.let { if (it) "yes" else "no" } ?: "n/a",
+        )
 
         Text("Discovery pipeline", color = Color.White)
         auditLine("Java advertised IDs", counters.javaAdvertisedIds)
@@ -94,21 +106,35 @@ internal fun AuxHardwareAuditPanel(
         Text("Canonical lenses / profiles", color = Color.White)
         audit.lenses.forEach { lens ->
             Text(
-                "Lens ${lens.fingerprint} facing=${lens.facing} status=${lens.verificationStatus} " +
-                    "profiles=${lens.profileCount} preferred=${lens.preferredProfile ?: "none"}",
+                "Lens ${lens.fingerprint} label=${lens.stableOpticalLabel ?: "n/a"} facing=${lens.facing} " +
+                    "1x=${lens.stableOneXRelationship} status=${lens.verificationStatus} profiles=${lens.profileCount} " +
+                    "preferred=${lens.preferredProfile ?: "none"}",
                 color = Color.White,
             )
-            Text(lens.opticalMetadata, color = Color.LightGray)
+            Text("aggregateTrust=${lens.aggregateTrust} ${lens.opticalMetadata}", color = Color.LightGray)
+            lens.groupingReasons.forEach { reason ->
+                Text("  $reason", color = Color.Gray)
+            }
             lens.profiles.forEach { profile ->
                 Text(
-                    "  Profile ${profile.fingerprint} ${profile.routeKind} selectable=${profile.selectable} " +
+                    "  Profile ${profile.fingerprint} ${profile.routeKind} route=${profile.routeIdentity} " +
+                        "relationship=${profile.logicalPhysicalRelationship ?: "none"} selectable=${profile.selectable} " +
                         "reject=${profile.rejectionReason ?: "none"} structural=${profile.structurallyFailed}",
                     color = Color.LightGray,
                 )
                 Text(
-                    "    sources=${profile.provenance.joinToString(",")} trust=${profile.metadataTrust}/${profile.previewTrust}",
+                    "    sources=${profile.provenance.joinToString(",")} " +
+                        "trust=${profile.metadataTrust}/${profile.previewTrust} session=${profile.sessionTrust} " +
+                        "previewSupport=${profile.previewSupported}",
                     color = Color.Gray,
                 )
+            }
+        }
+
+        if (audit.separationReasons.isNotEmpty()) {
+            Text("Canonical separation reasons", color = Color.White)
+            audit.separationReasons.forEach { reason ->
+                Text(reason, color = Color.Gray)
             }
         }
 
@@ -116,7 +142,8 @@ internal fun AuxHardwareAuditPanel(
         audit.deepCandidates.forEach { candidate ->
             Text(
                 "${candidate.fingerprint}: ndk=${candidate.ndkOutcome} java=${candidate.javaCertification ?: "not-certified"} " +
-                    "route=${candidate.routeResolved} selectable=${candidate.profileSelectable} verified=${candidate.previewVerified}",
+                    "route=${candidate.routeResolved} selectable=${candidate.profileSelectable} verified=${candidate.previewVerified} " +
+                    "stage=${candidate.pipelineStage}",
                 color = Color.LightGray,
             )
         }

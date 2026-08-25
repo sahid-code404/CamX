@@ -28,10 +28,15 @@ class AtomicCameraCachePersistence internal constructor(
 
     override suspend fun readTopology(
         environment: CameraEnvironmentFingerprint,
-    ): CacheRead<CameraTopologySnapshot> =
-        readBounded(topologyFile, CacheBounds.TOPOLOGY_FILE_BYTES) {
+    ): CacheRead<CameraTopologySnapshot> {
+        val inspection = inspectTopologyThroughFileSystem(environment)
+        TopologyCacheMigrationAudit.recordInspection(inspection)
+        val result = readBounded(topologyFile, CacheBounds.TOPOLOGY_FILE_BYTES) {
             TopologyCacheCodec.decode(it, environment)
         }
+        TopologyCacheMigrationAudit.recordRead(result)
+        return result
+    }
 
     internal suspend fun readStableLensReference(
         environment: CameraEnvironmentFingerprint,
@@ -50,8 +55,11 @@ class AtomicCameraCachePersistence internal constructor(
     override suspend fun writeHot(snapshot: HotStartSnapshot): CacheWrite =
         encodeAndWrite(hotFile, hotTempFile) { HotStartCacheCodec.encode(snapshot) }
 
-    override suspend fun writeTopology(snapshot: CameraTopologySnapshot): CacheWrite =
-        encodeAndWrite(topologyFile, topologyTempFile) { TopologyCacheCodec.encode(snapshot) }
+    override suspend fun writeTopology(snapshot: CameraTopologySnapshot): CacheWrite {
+        val result = encodeAndWrite(topologyFile, topologyTempFile) { TopologyCacheCodec.encode(snapshot) }
+        TopologyCacheMigrationAudit.recordWrite(result)
+        return result
+    }
 
     internal suspend fun writeStableLensReference(snapshot: StableLensReferenceSnapshot): CacheWrite =
         encodeAndWrite(referenceFile, referenceTempFile) { StableLensReferenceCacheCodec.encode(snapshot) }
@@ -72,6 +80,34 @@ class AtomicCameraCachePersistence internal constructor(
             }
         } catch (_: Exception) {
             DiscoveryCacheResetResult.FAILED
+        }
+    }
+
+    private fun inspectTopologyThroughFileSystem(
+        environment: CameraEnvironmentFingerprint,
+    ): TopologyCacheInspection {
+        return try {
+            if (!fileSystem.exists(topologyFile)) {
+                return TopologyCacheInspection(TopologyCacheInspectionStatus.ABSENT)
+            }
+            val length = fileSystem.length(topologyFile)
+            if (length <= 0L || length > CacheBounds.TOPOLOGY_FILE_BYTES.toLong()) {
+                return TopologyCacheInspection(TopologyCacheInspectionStatus.CORRUPT)
+            }
+            val bytes = ByteArray(length.toInt())
+            fileSystem.openInput(topologyFile).use { input ->
+                var offset = 0
+                while (offset < bytes.size) {
+                    val read = input.read(bytes, offset, bytes.size - offset)
+                    if (read < 0) return TopologyCacheInspection(TopologyCacheInspectionStatus.CORRUPT)
+                    if (read == 0) continue
+                    offset += read
+                }
+                if (input.read() != -1) return TopologyCacheInspection(TopologyCacheInspectionStatus.CORRUPT)
+            }
+            TopologyCacheMigrationInspector.inspectBytes(bytes, environment)
+        } catch (_: Exception) {
+            TopologyCacheInspection(TopologyCacheInspectionStatus.IO_FAILURE)
         }
     }
 

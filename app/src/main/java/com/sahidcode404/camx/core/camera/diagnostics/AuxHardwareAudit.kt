@@ -8,13 +8,20 @@ import com.sahidcode404.camx.core.camera.discovery.JavaDeepCertificationReport
 import com.sahidcode404.camx.core.camera.discovery.NdkAdvertisedEvidenceReport
 import com.sahidcode404.camx.core.camera.discovery.NdkDeepEvidenceReport
 import com.sahidcode404.camx.core.camera.lens.CameraLensProjection
+import com.sahidcode404.camx.core.camera.lens.CanonicalLensTrustAggregator
 import com.sahidcode404.camx.core.camera.lens.LensProfileEligibility
 import com.sahidcode404.camx.core.camera.lens.LensTestStatus
 import com.sahidcode404.camx.core.camera.model.CameraMetadataEvidence
 import com.sahidcode404.camx.core.camera.model.CameraProfile
 import com.sahidcode404.camx.core.camera.model.CameraRouteSource
+import com.sahidcode404.camx.core.camera.model.CameraSchemaVersions
 import com.sahidcode404.camx.core.camera.model.CameraTopologySnapshot
+import com.sahidcode404.camx.core.camera.model.CanonicalLens
+import com.sahidcode404.camx.core.camera.model.LensFacing
 import com.sahidcode404.camx.core.camera.model.PreviewTrust
+import com.sahidcode404.camx.core.camera.topology.CanonicalLensOptics
+import com.sahidcode404.camx.core.camera.topology.OpticalLensMatch
+import com.sahidcode404.camx.core.camera.topology.OpticalLensMatcher
 import java.security.MessageDigest
 import java.util.Collections
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,12 +52,24 @@ data class AuxDiscoveryPipelineCounters(
     val incrementalTopologyPublications: Long = 0L,
 )
 
+data class AuxCacheAudit(
+    val currentTopologySchema: Int = CameraSchemaVersions.TOPOLOGY,
+    val storedTopologySchema: Int? = null,
+    val status: String = "NOT_CHECKED",
+    val environmentCompatible: Boolean? = null,
+    val migrated: Boolean = false,
+)
+
 data class AuxProfileAudit(
     val fingerprint: String,
     val provenance: List<String>,
     val routeKind: String,
+    val routeIdentity: String,
+    val logicalPhysicalRelationship: String?,
     val metadataTrust: String,
     val previewTrust: String,
+    val sessionTrust: String,
+    val previewSupported: Boolean,
     val javaPublic: Boolean,
     val javaPhysical: Boolean,
     val javaDeepProbed: Boolean,
@@ -64,10 +83,14 @@ data class AuxProfileAudit(
 data class AuxLensAudit(
     val fingerprint: String,
     val facing: String,
+    val stableOpticalLabel: String?,
+    val stableOneXRelationship: String,
     val opticalMetadata: String,
     val profileCount: Int,
     val preferredProfile: String?,
+    val aggregateTrust: String,
     val verificationStatus: String,
+    val groupingReasons: List<String>,
     val profiles: List<AuxProfileAudit>,
 )
 
@@ -85,6 +108,7 @@ data class AuxDeepCandidateAudit(
 
 data class AuxHardwareAuditSnapshot(
     val counters: AuxDiscoveryPipelineCounters = AuxDiscoveryPipelineCounters(),
+    val cache: AuxCacheAudit = AuxCacheAudit(),
     val resolvedRoutes: Int = 0,
     val resolvedProfiles: Int = 0,
     val canonicalLenses: Int = 0,
@@ -92,6 +116,7 @@ data class AuxHardwareAuditSnapshot(
     val nonselectableCanonicalLenses: Int = 0,
     val sessionVerifiedLenses: Int = 0,
     val lenses: List<AuxLensAudit> = emptyList(),
+    val separationReasons: List<String> = emptyList(),
     val deepCandidates: List<AuxDeepCandidateAudit> = emptyList(),
     val deepRescanResult: DeepRescanRequestResult? = null,
     val cacheResetResult: DiscoveryCacheResetResult? = null,
@@ -343,14 +368,19 @@ internal class AuxDiscoveryAuditTracker(
 
 /** Pure projection of internal discovery state into sanitized, deterministic hardware-audit output. */
 internal object AuxHardwareAudit {
+    private const val MAX_GROUPING_REASONS_PER_LENS = 8
+    private const val MAX_SEPARATION_REASONS = 24
+
     fun build(
         topology: CameraTopologySnapshot?,
         projection: CameraLensProjection,
         tracker: AuxDiscoveryTrackerSnapshot,
+        cache: AuxCacheAudit = AuxCacheAudit(),
     ): AuxHardwareAuditSnapshot {
         if (topology == null) {
             return AuxHardwareAuditSnapshot(
                 counters = tracker.counters,
+                cache = cache,
                 deepRescanResult = tracker.deepRescanResult,
                 cacheResetResult = tracker.cacheResetResult,
             )
@@ -358,22 +388,40 @@ internal object AuxHardwareAudit {
         val itemByLens = projection.items.associateBy { it.canonicalFingerprint }
         val lenses = topology.canonicalLenses.sortedBy { it.fingerprint.value }.map { lens ->
             val profiles = lens.profiles.sortedBy { it.fingerprint.value }.map { profile ->
-                profileAudit(profile, projection)
+                profileAudit(topology, profile, projection)
             }
             val preferred = projection.targets[lens.fingerprint]?.profileFingerprint?.value
             val hasSessionVerifiedProfile = lens.profiles.any { it.route.previewTrust == PreviewTrust.VERIFIED }
-            val currentStatus = itemByLens[lens.fingerprint]?.status
+            val item = itemByLens[lens.fingerprint]
+            val currentStatus = item?.status
+            val trust = CanonicalLensTrustAggregator.aggregate(lens)
+            val stableLabel = item?.let { ui ->
+                listOfNotNull(ui.primaryLabel.takeIf(String::isNotBlank), ui.secondaryOpticalLabel)
+                    .joinToString(" / ")
+                    .takeIf(String::isNotBlank)
+            }
             AuxLensAudit(
                 fingerprint = sanitized("lens", lens.fingerprint.value),
                 facing = lens.facing.name,
-                opticalMetadata = opticalMetadata(topology, lens.profiles),
+                stableOpticalLabel = stableLabel,
+                stableOneXRelationship = when {
+                    lens.facing != LensFacing.BACK -> "NOT_REAR"
+                    lens.fingerprint == projection.stableOneXReferenceFingerprint -> "REFERENCE_1X"
+                    item != null -> item.primaryLabel
+                    else -> "UNAVAILABLE"
+                },
+                opticalMetadata = opticalMetadata(topology, lens),
                 profileCount = lens.profiles.size,
                 preferredProfile = preferred?.let { sanitized("profile", it) },
+                aggregateTrust = "${trust.metadataTrust.name}/${trust.previewTrust.name}/${trust.rawTrust.name}",
                 verificationStatus = currentStatus?.name ?: if (hasSessionVerifiedProfile) {
                     "SESSION_VERIFIED"
                 } else {
                     "DIAGNOSTIC_ONLY"
                 },
+                groupingReasons = Collections.unmodifiableList(
+                    ArrayList(groupingReasons(topology, lens).take(MAX_GROUPING_REASONS_PER_LENS)),
+                ),
                 profiles = Collections.unmodifiableList(ArrayList(profiles)),
             )
         }
@@ -427,6 +475,7 @@ internal object AuxHardwareAudit {
         }
         return AuxHardwareAuditSnapshot(
             counters = tracker.counters,
+            cache = cache,
             resolvedRoutes = topology.routes.size,
             resolvedProfiles = profiles,
             canonicalLenses = topology.canonicalLenses.size,
@@ -434,22 +483,42 @@ internal object AuxHardwareAudit {
             nonselectableCanonicalLenses = (topology.canonicalLenses.size - projection.items.size).coerceAtLeast(0),
             sessionVerifiedLenses = verified,
             lenses = Collections.unmodifiableList(ArrayList(lenses)),
+            separationReasons = Collections.unmodifiableList(
+                ArrayList(separationReasons(topology).take(MAX_SEPARATION_REASONS)),
+            ),
             deepCandidates = Collections.unmodifiableList(ArrayList(deepCandidates)),
             deepRescanResult = tracker.deepRescanResult,
             cacheResetResult = tracker.cacheResetResult,
         )
     }
 
-    private fun profileAudit(profile: CameraProfile, projection: CameraLensProjection): AuxProfileAudit {
+    private fun profileAudit(
+        topology: CameraTopologySnapshot,
+        profile: CameraProfile,
+        projection: CameraLensProjection,
+    ): AuxProfileAudit {
         val route = profile.route
         val eligibility = projection.eligibilityByProfile[profile.fingerprint]
         val rejection = (eligibility as? LensProfileEligibility.Rejected)?.reason
+        val evidence = evidenceForProfile(topology, profile)
+        val relationships = evidence.mapNotNull { item ->
+            val member = item.physicalId?.value ?: return@mapNotNull null
+            val parent = item.logicalParentId?.value ?: item.transportId.value
+            "${sanitized("parent", parent)}→${sanitized("member", member)}"
+        }.distinct().sorted()
         return AuxProfileAudit(
             fingerprint = sanitized("profile", profile.fingerprint.value),
             provenance = route.sources.map { it.name }.sorted(),
             routeKind = if (route.physicalCameraId == null) "DIRECT" else "PHYSICAL_TARGET",
+            routeIdentity = sanitized(
+                "route",
+                "${route.source.name}|${route.openCameraId.value}|${route.physicalCameraId?.value.orEmpty()}",
+            ),
+            logicalPhysicalRelationship = relationships.joinToString(",").takeIf(String::isNotBlank),
             metadataTrust = route.metadataTrust.name,
             previewTrust = route.previewTrust.name,
+            sessionTrust = route.previewTrust.name,
+            previewSupported = route.capabilities.previewStreams.isNotEmpty(),
             javaPublic = CameraRouteSource.JAVA_PUBLIC in route.sources,
             javaPhysical = CameraRouteSource.JAVA_PHYSICAL in route.sources,
             javaDeepProbed = CameraRouteSource.JAVA_DEEP_PROBED in route.sources,
@@ -461,17 +530,102 @@ internal object AuxHardwareAudit {
         )
     }
 
-    private fun opticalMetadata(topology: CameraTopologySnapshot, profiles: List<CameraProfile>): String {
-        val routeIds = profiles.map { it.route.id }.toSet()
-        val routes = topology.routes.filter { it.id in routeIds }
-        val evidence = topology.evidence.filter { item -> routes.any { route ->
-            item.transportId == route.openCameraId && item.physicalId == route.physicalCameraId
-        } }
-        val focals = evidence.flatMap { it.focalLengthsMillimetres }.distinct().sorted()
-        val widths = evidence.mapNotNull { it.sensorPhysicalWidthMillimetres }.distinct().sorted()
-        val focalText = if (focals.isEmpty()) "focal=?" else "focal=${focals.joinToString(",")}mm"
-        val sensorText = if (widths.isEmpty()) "sensorWidth=?" else "sensorWidth=${widths.joinToString(",")}mm"
-        return "$focalText $sensorText"
+    private fun opticalMetadata(topology: CameraTopologySnapshot, lens: CanonicalLens): String {
+        val optical = CanonicalLensOptics.resolve(topology, lens)
+        val focal = optical.focalLengthMillimetres?.let { "${it}mm" } ?: "?"
+        val sensor = if (
+            optical.sensorPhysicalWidthMillimetres != null && optical.sensorPhysicalHeightMillimetres != null
+        ) {
+            "${optical.sensorPhysicalWidthMillimetres}x${optical.sensorPhysicalHeightMillimetres}mm"
+        } else {
+            "?"
+        }
+        val active = optical.activeArray?.let { "${it.width}x${it.height}" } ?: "?"
+        val pixel = optical.pixelArray?.let { "${it.width}x${it.height}" } ?: "?"
+        return "focal=$focal sensor=$sensor active=$active pixel=$pixel " +
+            "orientation=${optical.sensorOrientationDegrees ?: "?"} cfa=${optical.colorFilterArrangement ?: "?"}"
+    }
+
+    private fun groupingReasons(topology: CameraTopologySnapshot, lens: CanonicalLens): List<String> {
+        val profiles = lens.profiles.sortedBy { it.fingerprint.value }
+        val reasons = ArrayList<String>()
+        for (leftIndex in profiles.indices) {
+            for (rightIndex in leftIndex + 1 until profiles.size) {
+                val left = profiles[leftIndex]
+                val right = profiles[rightIndex]
+                val comparison = OpticalLensMatcher.compare(
+                    evidenceForProfile(topology, left),
+                    evidenceForProfile(topology, right),
+                )
+                reasons += comparisonLine("GROUPED", left, right, comparison)
+            }
+        }
+        return reasons
+    }
+
+    private fun separationReasons(topology: CameraTopologySnapshot): List<String> {
+        val lenses = topology.canonicalLenses.sortedBy { it.fingerprint.value }
+        val reasons = ArrayList<String>()
+        for (leftIndex in lenses.indices) {
+            for (rightIndex in leftIndex + 1 until lenses.size) {
+                if (reasons.size >= MAX_SEPARATION_REASONS) return reasons
+                val leftLens = lenses[leftIndex]
+                val rightLens = lenses[rightIndex]
+                val comparisons = leftLens.profiles.flatMap { left ->
+                    rightLens.profiles.map { right ->
+                        Triple(
+                            left,
+                            right,
+                            OpticalLensMatcher.compare(
+                                evidenceForProfile(topology, left),
+                                evidenceForProfile(topology, right),
+                            ),
+                        )
+                    }
+                }
+                val selected = comparisons.minWithOrNull(
+                    compareBy<Triple<CameraProfile, CameraProfile, com.sahidcode404.camx.core.camera.topology.OpticalLensComparison>>(
+                        { comparisonRank(it.third.match) },
+                        { it.first.fingerprint.value },
+                        { it.second.fingerprint.value },
+                    ),
+                ) ?: continue
+                val lensPair = "${sanitized("lens", leftLens.fingerprint.value)}↔" +
+                    sanitized("lens", rightLens.fingerprint.value)
+                reasons += "$lensPair ${comparisonLine("SEPARATE", selected.first, selected.second, selected.third)}"
+            }
+        }
+        return reasons
+    }
+
+    private fun comparisonRank(match: OpticalLensMatch): Int = when (match) {
+        OpticalLensMatch.CONFLICT -> 0
+        OpticalLensMatch.INSUFFICIENT_EVIDENCE -> 1
+        OpticalLensMatch.PROBABLE_MATCH -> 2
+        OpticalLensMatch.STRONG_MATCH -> 3
+    }
+
+    private fun comparisonLine(
+        prefix: String,
+        left: CameraProfile,
+        right: CameraProfile,
+        comparison: com.sahidcode404.camx.core.camera.topology.OpticalLensComparison,
+    ): String {
+        val families = comparison.evidenceFamilies.map { it.name }.sorted().joinToString(",").ifBlank { "none" }
+        val details = (comparison.positiveReasons.take(2) + comparison.negativeReasons.take(2))
+            .joinToString("; ")
+            .ifBlank { "no decisive evidence" }
+        return "$prefix profiles=${sanitized("profile", left.fingerprint.value)}↔" +
+            "${sanitized("profile", right.fingerprint.value)} match=${comparison.match.name} " +
+            "score=${comparison.score} families=$families reason=$details"
+    }
+
+    private fun evidenceForProfile(
+        topology: CameraTopologySnapshot,
+        profile: CameraProfile,
+    ): List<CameraMetadataEvidence> = topology.evidence.filter { evidence ->
+        evidence.transportId == profile.route.openCameraId &&
+            evidence.physicalId == profile.route.physicalCameraId
     }
 
     private fun sanitized(kind: String, value: String): String {

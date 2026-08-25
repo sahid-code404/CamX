@@ -83,13 +83,14 @@ class CameraTopologyResolverTest {
     }
 
     @Test
-    fun identicalMetadataWithoutRelationshipRemainsSeparate() {
+    fun identicalStrongMetadataWithoutRelationshipGroupsAsVendorAliases() {
         val topology = CameraTopologyResolver.resolve(
             environment,
             listOf(snapshot(CameraRouteSource.JAVA_PUBLIC, listOf(complete("opaque-a"), complete("opaque-b")))),
             10L,
         )
-        assertEquals(2, topology.canonicalLenses.size)
+        assertEquals(1, topology.canonicalLenses.size)
+        assertEquals(2, topology.canonicalLenses.single().profiles.size)
     }
 
     @Test

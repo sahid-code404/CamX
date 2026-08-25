@@ -15,6 +15,7 @@ import com.sahidcode404.camx.core.camera.diagnostics.AuxHardwareAudit
 import com.sahidcode404.camx.core.camera.diagnostics.AuxHardwareAuditSnapshot
 import com.sahidcode404.camx.core.camera.diagnostics.DeepRescanCoordinator
 import com.sahidcode404.camx.core.camera.diagnostics.DeepRescanRequestResult
+import com.sahidcode404.camx.core.camera.diagnostics.LensSwitchDiagnostics
 import com.sahidcode404.camx.core.camera.discovery.AndroidAdvertisedCameraEvidenceBackend
 import com.sahidcode404.camx.core.camera.discovery.AndroidFirstInstallSeedDiscovery
 import com.sahidcode404.camx.core.camera.discovery.DiscoveryDepth
@@ -108,6 +109,7 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     private val firstFrameVerified = AtomicBoolean(false)
     private val structurallyFailedAuditProfiles = LinkedHashSet<CameraProfileFingerprint>()
     private val auditTracker = AuxDiscoveryAuditTracker(SystemClock::elapsedRealtimeNanos)
+    private val latestSwitchDiagnostics = AtomicReference(LensSwitchDiagnostics())
     private val mutableAuxAudit = MutableStateFlow(AuxHardwareAuditSnapshot())
 
     val topologyRepository = CameraTopologyRepository()
@@ -183,6 +185,13 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
         stableOneXReference = lensInventory.stableOneXReference,
         runtimeApiLevel = Build.VERSION.SDK_INT,
         settings = { SettingsSnapshot() },
+        clockNanos = SystemClock::elapsedRealtimeNanos,
+        switchDiagnosticsSink = { diagnostics ->
+            latestSwitchDiagnostics.set(diagnostics)
+            // Keep this hot-path update bounded. Full topology/optical audit projection remains on
+            // the existing low-frequency refresh paths below.
+            mutableAuxAudit.value = mutableAuxAudit.value.copy(switch = diagnostics)
+        },
     )
 
     private val deepRescanCoordinator = DeepRescanCoordinator(
@@ -342,6 +351,7 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
             topology = topologyRepository.topology.value,
             projection = projection,
             tracker = auditTracker.snapshot(),
+            switch = latestSwitchDiagnostics.get(),
         )
     }
 

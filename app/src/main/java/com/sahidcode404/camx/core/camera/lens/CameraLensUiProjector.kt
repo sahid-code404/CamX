@@ -1,10 +1,7 @@
 package com.sahidcode404.camx.core.camera.lens
 
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
-import com.sahidcode404.camx.core.camera.model.CameraProfile
 import com.sahidcode404.camx.core.camera.model.CameraProfileFingerprint
-import com.sahidcode404.camx.core.camera.model.CameraRoute
-import com.sahidcode404.camx.core.camera.model.CameraRouteId
 import com.sahidcode404.camx.core.camera.model.CameraTopologySnapshot
 import com.sahidcode404.camx.core.camera.model.CanonicalLens
 import com.sahidcode404.camx.core.camera.model.CanonicalLensFingerprint
@@ -15,6 +12,7 @@ import java.math.RoundingMode
 /** Session-local hardware-test state. It deliberately does not mutate persisted CAMX-107 trust. */
 enum class LensTestStatus {
     ADVERTISED,
+    AVAILABLE,
     OPENING,
     VERIFIED,
     FAILED,
@@ -40,8 +38,8 @@ internal data class LensPreviewMetadata(
 internal data class LensSelectionTarget(
     val canonicalFingerprint: CanonicalLensFingerprint,
     val profileFingerprint: CameraProfileFingerprint,
-    val routeId: CameraRouteId,
-    val route: CameraRoute,
+    val routeId: com.sahidcode404.camx.core.camera.model.CameraRouteId,
+    val route: com.sahidcode404.camx.core.camera.model.CameraRoute,
     val previewMetadata: LensPreviewMetadata,
 )
 
@@ -49,6 +47,7 @@ internal data class CameraLensProjection(
     val items: List<CameraLensUiItem>,
     val targets: Map<CanonicalLensFingerprint, LensSelectionTarget>,
     val eligibilityByProfile: Map<CameraProfileFingerprint, LensProfileEligibility> = emptyMap(),
+    val rankedTargetsByLens: Map<CanonicalLensFingerprint, List<LensSelectionTarget>> = emptyMap(),
 )
 
 internal data class CameraLensProjectionInput(
@@ -56,45 +55,50 @@ internal data class CameraLensProjectionInput(
     val runtimeApiLevel: Int,
     val activeSelection: ActiveCameraSelection?,
     val statusByLens: Map<CanonicalLensFingerprint, LensTestStatus> = emptyMap(),
+    val structurallyFailedProfiles: Set<CameraProfileFingerprint> = emptySet(),
 )
 
 /** Pure, deterministic CAMX-107 topology -> one-button-per-canonical-lens projection. */
 internal object CameraLensUiProjector {
     fun project(input: CameraLensProjectionInput): CameraLensProjection {
-        val topology = input.topology ?: return CameraLensProjection(emptyList(), emptyMap(), emptyMap())
-        val activeProfile = input.activeSelection?.routeId?.let { activeRouteId ->
-            topology.canonicalLenses.asSequence()
-                .flatMap { lens -> lens.profiles.asSequence() }
-                .firstOrNull { profile -> profile.route.id == activeRouteId }
-        }
+        val topology = input.topology
+            ?: return CameraLensProjection(emptyList(), emptyMap(), emptyMap(), emptyMap())
         val eligibilityByProfile = LinkedHashMap<CameraProfileFingerprint, LensProfileEligibility>()
+        val rankedTargetsByLens = LinkedHashMap<CanonicalLensFingerprint, List<LensSelectionTarget>>()
 
         val works = topology.canonicalLenses.mapNotNull { lens ->
             val candidates = lens.profiles.mapNotNull { profile ->
-                when (val eligibility = LensProfileEligibilityResolver.resolve(
-                    topology = topology,
-                    lens = lens,
-                    profile = profile,
-                    runtimeApiLevel = input.runtimeApiLevel,
-                )) {
-                    is LensProfileEligibility.Eligible -> {
-                        eligibilityByProfile[profile.fingerprint] = eligibility
-                        eligibility.target
-                    }
-                    is LensProfileEligibility.Rejected -> {
-                        eligibilityByProfile[profile.fingerprint] = eligibility
-                        null
-                    }
+                val eligibility = if (profile.fingerprint in input.structurallyFailedProfiles) {
+                    LensProfileEligibility.Rejected(
+                        profileFingerprint = profile.fingerprint,
+                        reason = LensProfileRejectionReason.STRUCTURALLY_FAILED_PROFILE,
+                    )
+                } else {
+                    LensProfileEligibilityResolver.resolve(
+                        topology = topology,
+                        lens = lens,
+                        profile = profile,
+                        runtimeApiLevel = input.runtimeApiLevel,
+                    )
                 }
+                eligibilityByProfile[profile.fingerprint] = eligibility
+                (eligibility as? LensProfileEligibility.Eligible)?.target
             }
-            val target = chooseTarget(lens, candidates, activeProfile, input.statusByLens)
-                ?: return@mapNotNull null
+            val ranked = LensProfileRanker.rank(
+                candidates = candidates,
+                activeSelection = input.activeSelection,
+                activeFirstFrameVerified = input.statusByLens[lens.fingerprint] == LensTestStatus.VERIFIED,
+            )
+            rankedTargetsByLens[lens.fingerprint] = ranked
+            val target = ranked.firstOrNull() ?: return@mapNotNull null
             val optical = opticalEvidence(topology, target)
             LensWork(
                 lens = lens,
                 target = target,
                 optical = optical,
-                status = input.statusByLens[lens.fingerprint] ?: LensTestStatus.ADVERTISED,
+                status = presentationStatus(
+                    input.statusByLens[lens.fingerprint] ?: LensTestStatus.AVAILABLE,
+                ),
             )
         }
         val ordered = works.sortedWith(lensOrder())
@@ -125,26 +129,7 @@ internal object CameraLensUiProjector {
             items = items,
             targets = targets,
             eligibilityByProfile = eligibilityByProfile,
-        )
-    }
-
-    private fun chooseTarget(
-        lens: CanonicalLens,
-        candidates: List<LensSelectionTarget>,
-        activeProfile: CameraProfile?,
-        statusByLens: Map<CanonicalLensFingerprint, LensTestStatus>,
-    ): LensSelectionTarget? {
-        if (candidates.isEmpty()) return null
-        val activeVerified = activeProfile
-            ?.takeIf { it.canonicalFingerprint == lens.fingerprint }
-            ?.takeIf { statusByLens[lens.fingerprint] == LensTestStatus.VERIFIED }
-            ?.let { active -> candidates.firstOrNull { it.profileFingerprint == active.fingerprint } }
-        if (activeVerified != null) return activeVerified
-        return candidates.minWith(
-            compareBy<LensSelectionTarget>(
-                { target -> if (target.route.physicalCameraId == null) 0 else 1 },
-                { target -> target.profileFingerprint.value },
-            ),
+            rankedTargetsByLens = rankedTargetsByLens,
         )
     }
 
@@ -159,6 +144,11 @@ internal object CameraLensUiProjector {
         val optical: OpticalEvidence,
         val status: LensTestStatus,
     )
+
+    private fun presentationStatus(status: LensTestStatus): LensTestStatus = when (status) {
+        LensTestStatus.ADVERTISED -> LensTestStatus.AVAILABLE
+        else -> status
+    }
 
     private fun opticalEvidence(topology: CameraTopologySnapshot, target: LensSelectionTarget): OpticalEvidence {
         val evidence = LensProfileEligibilityResolver.compatiblePreviewEvidence(

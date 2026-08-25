@@ -180,7 +180,9 @@ private fun LensTestButton(
 
 @Composable
 private fun lensStatusText(status: LensTestStatus): String = when (status) {
-    LensTestStatus.ADVERTISED -> stringResource(R.string.lens_status_advertised)
+    LensTestStatus.ADVERTISED,
+    LensTestStatus.AVAILABLE,
+    -> stringResource(R.string.lens_status_advertised)
     LensTestStatus.OPENING -> stringResource(R.string.lens_status_opening)
     LensTestStatus.VERIFIED -> stringResource(R.string.lens_status_verified)
     LensTestStatus.FAILED -> stringResource(R.string.lens_status_failed)

@@ -54,7 +54,13 @@ class AuxHardwareAuditTest {
         tracker.onJavaAdvertised(
             JavaAdvertisedEvidenceReport(
                 snapshots = listOf(
-                    snapshot(CameraRouteSource.JAVA_PUBLIC, listOf(evidence("main", CameraRouteSource.JAVA_PUBLIC, 4f))),
+                    snapshot(
+                        CameraRouteSource.JAVA_PUBLIC,
+                        listOf(
+                            evidence("main", CameraRouteSource.JAVA_PUBLIC, 4f),
+                            evidence("logical", CameraRouteSource.JAVA_PUBLIC, 2.5f),
+                        ),
+                    ),
                     snapshot(
                         CameraRouteSource.JAVA_PHYSICAL,
                         listOf(
@@ -90,11 +96,20 @@ class AuxHardwareAuditTest {
                 snapshot = snapshot(CameraRouteSource.NDK_DEEP, listOf(evidence("opaque-hidden", CameraRouteSource.NDK_DEEP, 2f))),
                 outcomes = listOf(
                     outcome("opaque-hidden", DeepAuxOutcomeKind.VALID_METADATA),
+                    outcome("other-valid", DeepAuxOutcomeKind.VALID_METADATA),
                     outcome("absent", DeepAuxOutcomeKind.NOT_FOUND_OR_UNAVAILABLE),
                     outcome("denied", DeepAuxOutcomeKind.ACCESS_DENIED),
                     outcome("busy", DeepAuxOutcomeKind.TEMPORARILY_UNAVAILABLE),
                 ),
                 failures = emptyList(),
+                plannedCandidates = listOf(
+                    DeepAuxCandidate("opaque-hidden", DeepAuxWave.LOW_NAMESPACE),
+                    DeepAuxCandidate("other-valid", DeepAuxWave.LOW_NAMESPACE),
+                    DeepAuxCandidate("absent", DeepAuxWave.LOW_NAMESPACE),
+                    DeepAuxCandidate("denied", DeepAuxWave.LOW_NAMESPACE),
+                    DeepAuxCandidate("busy", DeepAuxWave.LOW_NAMESPACE),
+                    DeepAuxCandidate("planned-only", DeepAuxWave.LOW_NAMESPACE),
+                ),
             ),
         )
         now += 10_000_000L
@@ -129,14 +144,14 @@ class AuxHardwareAuditTest {
 
         val audit = AuxHardwareAudit.build(topology, projection, tracker.snapshot())
         assertEquals(2, audit.counters.javaAdvertisedIds)
-        assertEquals(1, audit.counters.javaPublicEvidence)
+        assertEquals(2, audit.counters.javaPublicEvidence)
         assertEquals(1, audit.counters.logicalCameraCount)
         assertEquals(1, audit.counters.physicalMemberRelationships)
         assertEquals(1, audit.counters.physicalMetadataSuccesses)
         assertEquals(1, audit.counters.physicalMetadataFailures)
         assertEquals(1, audit.counters.ndkAdvertisedEvidence)
-        assertEquals(4, audit.counters.deepCandidateAddressesAttempted)
-        assertEquals(1, audit.counters.deepValidMetadata)
+        assertEquals(5, audit.counters.deepCandidateAddressesAttempted)
+        assertEquals(2, audit.counters.deepValidMetadata)
         assertEquals(1, audit.counters.deepTerminalNegative)
         assertEquals(1, audit.counters.deepAccessDenied)
         assertEquals(1, audit.counters.deepTemporaryOrServiceFailure)
@@ -150,11 +165,37 @@ class AuxHardwareAuditTest {
         assertEquals(1, audit.sessionVerifiedLenses)
         assertEquals(3L, audit.counters.incrementalTopologyPublications)
 
-        val hidden = audit.deepCandidates.single { it.ndkOutcome == DeepAuxOutcomeKind.VALID_METADATA.name }
-        assertTrue(hidden.routeResolved)
-        assertTrue(hidden.profileSelectable)
-        assertTrue(hidden.previewVerified)
-        assertFalse(hidden.fingerprint.contains("opaque-hidden"))
+        val stages = audit.deepCandidates.associateBy { it.pipelineStage }
+        assertEquals(6, audit.deepCandidates.size)
+        assertTrue(stages.getValue("LENS_PREVIEW_VERIFIED").routeResolved)
+        assertTrue(stages.getValue("LENS_PREVIEW_VERIFIED").profileSelectable)
+        assertTrue(stages.getValue("LENS_PREVIEW_VERIFIED").previewVerified)
+        assertEquals(
+            JavaDeepCertificationKind.MISSING_ORIENTATION.name,
+            stages.getValue("NDK_VALID_JAVA_CERTIFICATION_FAILED").javaCertification,
+        )
+        assertEquals(
+            DeepAuxOutcomeKind.NOT_FOUND_OR_UNAVAILABLE.name,
+            stages.getValue("NDK_NOT_FOUND_OR_UNAVAILABLE").ndkOutcome,
+        )
+        assertEquals(
+            DeepAuxOutcomeKind.ACCESS_DENIED.name,
+            stages.getValue("NDK_ACCESS_DENIED").ndkOutcome,
+        )
+        assertEquals(
+            DeepAuxOutcomeKind.TEMPORARILY_UNAVAILABLE.name,
+            stages.getValue("NDK_TEMPORARILY_UNAVAILABLE").ndkOutcome,
+        )
+        assertEquals(DeepAuxWave.LOW_NAMESPACE.name, stages.getValue("PLANNED_NOT_ATTEMPTED").plannedWave)
+        audit.deepCandidates.forEach { candidate ->
+            assertTrue(candidate.fingerprint.matches(Regex("[0-9a-f]{16}")))
+        }
+        audit.lenses.forEach { lens ->
+            assertTrue(lens.fingerprint.matches(Regex("[0-9a-f]{16}")))
+            lens.profiles.forEach { profile ->
+                assertTrue(profile.fingerprint.matches(Regex("[0-9a-f]{16}")))
+            }
+        }
         projection.items.forEach { item ->
             assertFalse(item.primaryLabel.contains("opaque-hidden"))
             assertFalse(item.secondaryOpticalLabel.orEmpty().contains("opaque-hidden"))

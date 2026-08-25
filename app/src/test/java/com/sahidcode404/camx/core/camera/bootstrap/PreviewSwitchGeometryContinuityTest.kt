@@ -155,7 +155,7 @@ class PreviewSwitchGeometryContinuityTest {
     }
 
     @Test
-    fun failedDifferentGeometryTargetRemainsCoherentAndCovered() {
+    fun transientDifferentGeometryTargetStaysCoveredThroughRetryThenReveals() {
         val fixture = fixture()
         fixture.startAndVerifyMain()
         fixture.coordinator.selectLens(lens("front"))
@@ -165,8 +165,33 @@ class PreviewSwitchGeometryContinuityTest {
         fixture.session.stateFlow.value = CameraEngineState.RecoverableError(targetSelection, CameraInUse)
 
         assertEquals(target, fixture.coordinator.renderSpec.value)
-        assertTrue(fixture.coordinator.uiState.value is VisiblePreviewUiState.Error)
+        assertTrue(fixture.coordinator.uiState.value is VisiblePreviewUiState.Opening)
+        assertEquals(CameraRouteId("route:front"), fixture.session.starts.last().route.id)
         assertFalse(shouldRevealPreviewSurface(fixture.coordinator.uiState.value, target))
+
+        fixture.session.verifyCurrent()
+        assertTrue(shouldRevealPreviewSurface(fixture.coordinator.uiState.value, fixture.coordinator.renderSpec.value))
+        assertTrue(checkNotNull(fixture.coordinator.renderSpec.value).geometry.mirrorHorizontally)
+    }
+
+    @Test
+    fun retryExhaustionFallsBackBehindCoverAndRevealsLastVerifiedGeometry() {
+        val fixture = fixture()
+        fixture.startAndVerifyMain()
+        fixture.coordinator.selectLens(lens("front"))
+        val firstAttempt = fixture.session.starts.last().selection
+        fixture.session.stateFlow.value = CameraEngineState.RecoverableError(firstAttempt, CameraInUse)
+        val retryAttempt = fixture.session.starts.last().selection
+        fixture.session.stateFlow.value = CameraEngineState.RecoverableError(retryAttempt, CameraInUse)
+
+        assertEquals(CameraRouteId("route:main"), fixture.session.starts.last().route.id)
+        assertTrue(fixture.coordinator.uiState.value is VisiblePreviewUiState.Opening)
+        assertFalse(shouldRevealPreviewSurface(fixture.coordinator.uiState.value, fixture.coordinator.renderSpec.value))
+
+        fixture.session.verifyCurrent()
+        val restored = checkNotNull(fixture.coordinator.renderSpec.value)
+        assertFalse(restored.geometry.mirrorHorizontally)
+        assertTrue(shouldRevealPreviewSurface(fixture.coordinator.uiState.value, restored))
     }
 
     @Test

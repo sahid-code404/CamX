@@ -46,9 +46,11 @@ import com.sahidcode404.camx.core.camera.topology.NdkDeepEvidenceSource
 import com.sahidcode404.camx.core.camera.topology.NdkLevel2EvidenceSource
 import com.sahidcode404.camx.core.camera.topology.PostFirstFrameAuxDiscoveryOrchestrator
 import com.sahidcode404.camx.core.camera.topology.PostFirstFrameTopologyReconciler
+import com.sahidcode404.camx.core.camera.topology.ReconciliationCompletion
 import com.sahidcode404.camx.core.settings.SettingsSnapshot
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -94,6 +96,7 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     private val lensInventory = LensInventoryCoordinator(
         environment = environment,
         runtimeApiLevel = Build.VERSION.SDK_INT,
+        clockNanos = SystemClock::elapsedRealtimeNanos,
     )
     private val deepKnowledgeRepository = DeepDiscoveryKnowledgeRepository(
         AtomicDeepDiscoveryKnowledgePersistence(cachePersistence),
@@ -101,6 +104,7 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     private val surfaceBridge = AndroidVisiblePreviewSurfaceBridge()
     private val topologySignalScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val explicitDeepRescanRequested = AtomicBoolean(false)
+    private val activeInventoryRescan = AtomicReference<Long?>(null)
     private val firstFrameVerified = AtomicBoolean(false)
     private val structurallyFailedAuditProfiles = LinkedHashSet<CameraProfileFingerprint>()
     private val auditTracker = AuxDiscoveryAuditTracker(SystemClock::elapsedRealtimeNanos)
@@ -108,6 +112,7 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
 
     val topologyRepository = CameraTopologyRepository()
     val auxAudit: StateFlow<AuxHardwareAuditSnapshot> = mutableAuxAudit.asStateFlow()
+    val lensInventoryStatus: StateFlow<LensInventoryStatus> = lensInventory.status
 
     private val auxDiscoveryOrchestrator = PostFirstFrameAuxDiscoveryOrchestrator(
         environment = environment,
@@ -182,13 +187,30 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
 
     private val deepRescanCoordinator = DeepRescanCoordinator(
         firstFrameVerified = { firstFrameVerified.get() },
+        inventoryReady = lensInventory::isReadyForExplicitRescan,
         reconciliationRunning = topologyReconciler::isRunning,
         setExplicitDeepRescan = explicitDeepRescanRequested::set,
         requestReconciliation = { done ->
-            topologyReconciler.requestReconciliation(
+            topologyReconciler.requestReconciliationWithCompletion(
                 preserveCurrentTopology = true,
                 onFinished = done,
             )
+        },
+        onRescanStarted = {
+            activeInventoryRescan.set(lensInventory.beginExplicitRescan())
+        },
+        onRescanFinished = { completion ->
+            val generation = activeInventoryRescan.getAndSet(null)
+            if (generation != null) {
+                val inventoryCompletion = lensInventory.completeExplicitRescan(
+                    generation = generation,
+                    coherent = completion == ReconciliationCompletion.COMPLETE,
+                    finalSnapshot = topologyRepository.topology.value,
+                )
+                topologySignalScope.launch(Dispatchers.IO) {
+                    persistInventoryCompletion(inventoryCompletion)
+                }
+            }
         },
         resetCaches = {
             val hadDeepMemory = deepKnowledgeRepository.current() != null

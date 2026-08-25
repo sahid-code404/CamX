@@ -16,11 +16,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.sahidcode404.camx.core.camera.bootstrap.LensInventoryStatus
 import com.sahidcode404.camx.core.camera.diagnostics.AuxHardwareAuditSnapshot
 
 @Composable
 internal fun AuxHardwareAuditPanel(
     audit: AuxHardwareAuditSnapshot,
+    inventoryStatus: LensInventoryStatus? = null,
     onClose: () -> Unit,
     onDeepRescan: () -> Unit,
     onResetDiscoveryCache: () -> Unit,
@@ -44,6 +46,17 @@ internal fun AuxHardwareAuditPanel(
         }
         audit.deepRescanResult?.let { Text("Deep rescan: ${it.name}", color = Color.White) }
         audit.cacheResetResult?.let { Text("Cache reset: ${it.name}", color = Color.White) }
+
+        inventoryStatus?.let { inventory ->
+            Text("Lens inventory", color = Color.White)
+            auditLine("Inventory readiness", inventory.readiness.name)
+            auditLine("Inventory source", inventory.source?.name ?: "none")
+            auditLine("Structural publications", inventory.structuralPublicationCount)
+            timingLine("Inventory ready latency", inventory.inventoryReadyLatencyMs)
+            timingLine("Last structural replacement", inventory.lastStructuralReplacementLatencyMs)
+            timingLine("Last refresh completion", inventory.lastRefreshCompletionLatencyMs)
+            auditLine("Last refresh outcome", inventory.lastRefreshOutcome?.name ?: "none")
+        }
 
         Text("Discovery pipeline", color = Color.White)
         auditLine("Java advertised IDs", counters.javaAdvertisedIds)

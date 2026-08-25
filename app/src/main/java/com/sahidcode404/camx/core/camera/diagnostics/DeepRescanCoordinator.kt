@@ -1,6 +1,7 @@
 package com.sahidcode404.camx.core.camera.diagnostics
 
 import com.sahidcode404.camx.core.camera.cache.DiscoveryCacheResetResult
+import com.sahidcode404.camx.core.camera.topology.ReconciliationCompletion
 import com.sahidcode404.camx.core.camera.topology.ReconciliationRequestResult
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -17,26 +18,46 @@ enum class DeepRescanRequestResult {
  */
 internal class DeepRescanCoordinator(
     private val firstFrameVerified: () -> Boolean,
+    private val inventoryReady: () -> Boolean = { true },
     private val reconciliationRunning: () -> Boolean,
     private val setExplicitDeepRescan: (Boolean) -> Unit,
-    private val requestReconciliation: ((() -> Unit) -> ReconciliationRequestResult),
+    private val requestReconciliation: (((ReconciliationCompletion) -> Unit) -> ReconciliationRequestResult),
+    private val onRescanStarted: () -> Unit = {},
+    private val onRescanFinished: (ReconciliationCompletion) -> Unit = {},
     private val resetCaches: suspend () -> DiscoveryCacheResetResult,
 ) {
     private val diagnosticOperationActive = AtomicBoolean(false)
 
     fun requestDeepRescan(): DeepRescanRequestResult {
-        if (!firstFrameVerified()) return DeepRescanRequestResult.NOT_READY
+        if (!firstFrameVerified() || !inventoryReady()) return DeepRescanRequestResult.NOT_READY
         if (!diagnosticOperationActive.compareAndSet(false, true)) {
             return DeepRescanRequestResult.ALREADY_RUNNING
         }
+
         setExplicitDeepRescan(true)
-        val result = requestReconciliation {
+        try {
+            onRescanStarted()
+        } catch (error: Throwable) {
             setExplicitDeepRescan(false)
             diagnosticOperationActive.set(false)
+            throw error
+        }
+
+        val result = requestReconciliation { completion ->
+            try {
+                onRescanFinished(completion)
+            } finally {
+                setExplicitDeepRescan(false)
+                diagnosticOperationActive.set(false)
+            }
         }
         if (result != ReconciliationRequestResult.STARTED) {
-            setExplicitDeepRescan(false)
-            diagnosticOperationActive.set(false)
+            try {
+                onRescanFinished(ReconciliationCompletion.CANCELLED)
+            } finally {
+                setExplicitDeepRescan(false)
+                diagnosticOperationActive.set(false)
+            }
         }
         return when (result) {
             ReconciliationRequestResult.STARTED -> DeepRescanRequestResult.STARTED

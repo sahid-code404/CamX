@@ -31,6 +31,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.sahidcode404.camx.R
+import com.sahidcode404.camx.core.camera.bootstrap.LensInventoryStatus
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewProblem
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewRenderSpec
 import com.sahidcode404.camx.core.camera.bootstrap.VisiblePreviewUiState
@@ -51,6 +52,7 @@ fun CameraScreen(
     renderSpec: VisiblePreviewRenderSpec?,
     lensItems: List<CameraLensUiItem>,
     auxAudit: AuxHardwareAuditSnapshot = AuxHardwareAuditSnapshot(),
+    inventoryStatus: LensInventoryStatus? = null,
     onLensSelected: (CanonicalLensFingerprint) -> Unit,
     onDeepRescan: () -> Unit = {},
     onResetDiscoveryCache: () -> Unit = {},
@@ -153,6 +155,7 @@ fun CameraScreen(
         if (showAuxAudit) {
             AuxHardwareAuditPanel(
                 audit = auxAudit,
+                inventoryStatus = inventoryStatus,
                 onClose = { showAuxAudit = false },
                 onDeepRescan = onDeepRescan,
                 onResetDiscoveryCache = onResetDiscoveryCache,

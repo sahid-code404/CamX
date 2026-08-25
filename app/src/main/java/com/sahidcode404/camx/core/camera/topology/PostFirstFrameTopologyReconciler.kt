@@ -38,6 +38,12 @@ internal enum class ReconciliationRequestResult {
     CLOSED,
 }
 
+internal enum class ReconciliationCompletion {
+    COMPLETE,
+    INCOMPLETE,
+    CANCELLED,
+}
+
 /** Holds only the current evidence record for each semantic evidence address. */
 internal class CurrentTopologyEvidenceAccumulator(
     private val environment: CameraEnvironmentFingerprint,
@@ -200,16 +206,32 @@ internal class PostFirstFrameTopologyReconciler(
     fun requestReconciliation(
         preserveCurrentTopology: Boolean = false,
         onFinished: () -> Unit = {},
+    ): ReconciliationRequestResult = requestReconciliationWithCompletion(
+        preserveCurrentTopology = preserveCurrentTopology,
+        onFinished = { onFinished() },
+    )
+
+    /**
+     * Completion-aware form used by explicit Deep Rescan. It does not alter scan semantics; it only
+     * reports whether all bounded providers reached their existing coherent completion contract.
+     */
+    fun requestReconciliationWithCompletion(
+        preserveCurrentTopology: Boolean = false,
+        onFinished: (ReconciliationCompletion) -> Unit = {},
     ): ReconciliationRequestResult {
         if (closed.get()) return ReconciliationRequestResult.CLOSED
         if (!armed.get()) return ReconciliationRequestResult.NOT_ARMED
         if (!running.compareAndSet(false, true)) return ReconciliationRequestResult.ALREADY_RUNNING
         scope.launch {
+            var completion = ReconciliationCompletion.INCOMPLETE
             try {
-                reconcileOnce(preserveCurrentTopology)
+                completion = reconcileOnce(preserveCurrentTopology)
+            } catch (cancelled: CancellationException) {
+                completion = ReconciliationCompletion.CANCELLED
+                throw cancelled
             } finally {
                 running.set(false)
-                onFinished()
+                onFinished(completion)
             }
         }
         return ReconciliationRequestResult.STARTED
@@ -217,7 +239,9 @@ internal class PostFirstFrameTopologyReconciler(
 
     fun isRunning(): Boolean = running.get()
 
-    private suspend fun reconcileOnce(preserveCurrentTopology: Boolean) {
+    private suspend fun reconcileOnce(
+        preserveCurrentTopology: Boolean,
+    ): ReconciliationCompletion {
         val previous = repository.topology.value
         val permit = repository.beginReconciliation(environment)
         val evidence = CurrentTopologyEvidenceAccumulator(environment)
@@ -274,19 +298,26 @@ internal class PostFirstFrameTopologyReconciler(
             }
         }
 
-        if (closed.get() || publishedAnyBatch || preserveCurrentTopology) return
+        if (closed.get()) return ReconciliationCompletion.CANCELLED
         val allProvidersCompletedSuccessfully = providerOutcomeMutex.withLock {
             completedProviders == providers.size && failedProviders == 0
         }
-        if (!allProvidersCompletedSuccessfully) return
+        if (!allProvidersCompletedSuccessfully) return ReconciliationCompletion.INCOMPLETE
 
-        val empty = CameraTopologyResolver.resolve(
-            environment = environment,
-            snapshots = emptyList(),
-            generatedAtElapsedRealtimeNs = clockNanos().coerceAtLeast(0L),
-            previousTrustedTopology = previous,
-        )
-        if (!closed.get()) repository.publish(empty, permit)
+        if (!publishedAnyBatch && !preserveCurrentTopology) {
+            val empty = CameraTopologyResolver.resolve(
+                environment = environment,
+                snapshots = emptyList(),
+                generatedAtElapsedRealtimeNs = clockNanos().coerceAtLeast(0L),
+                previousTrustedTopology = previous,
+            )
+            if (!closed.get()) repository.publish(empty, permit)
+        }
+        return if (closed.get()) {
+            ReconciliationCompletion.CANCELLED
+        } else {
+            ReconciliationCompletion.COMPLETE
+        }
     }
 
     private fun previousEvidenceSnapshots(previous: CameraTopologySnapshot): List<CameraEvidenceSnapshot> =

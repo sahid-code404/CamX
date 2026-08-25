@@ -2,15 +2,18 @@ package com.sahidcode404.camx.core.camera.session
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 
 /**
  * Serializes short authoritative mutations on the camera-control dispatcher.
  *
- * Waiting to acquire the gate remains cancellable so an obsolete orchestration intent can disappear
- * before it owns camera state. Once the mutex is acquired, the caller has crossed the ownership
- * boundary: dispatcher handoff and the non-suspending mutation finish in a NonCancellable context.
+ * A live caller waits cancellably, so an obsolete orchestration intent can disappear before it owns
+ * camera state. Once the mutex is acquired, dispatcher handoff, the mutation, and the return hop are
+ * enclosed by NonCancellable. If a controller transaction invokes a follow-up mutation after its
+ * caller was cancelled, that already-committed follow-up is allowed to reacquire non-cancellably.
  *
  * The mutation block itself must stay short and non-suspending. Platform waits, timeouts, joins,
  * deferred completion, discovery, disk IO, and arbitrary long work are forbidden while this mutex is
@@ -22,9 +25,15 @@ internal class CameraStateMutationGate(
     private val mutex = Mutex()
 
     suspend fun <T> mutate(block: () -> T): T {
-        mutex.lock() // cancellable until this caller becomes the authoritative mutation owner
+        if (currentCoroutineContext().isActive) {
+            mutex.lock()
+        } else {
+            withContext(NonCancellable) { mutex.lock() }
+        }
         return try {
-            withContext(NonCancellable + dispatcher) { block() }
+            withContext(NonCancellable) {
+                withContext(dispatcher) { block() }
+            }
         } finally {
             mutex.unlock()
         }

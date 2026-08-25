@@ -38,6 +38,7 @@ class MainActivity : ComponentActivity() {
                 var requestCompleted by remember { mutableStateOf(cameraPermissionGranted) }
                 val uiState by visiblePreviewGraph.coordinator.uiState.collectAsState()
                 val renderSpec by visiblePreviewGraph.coordinator.renderSpec.collectAsState()
+                val lensItems by visiblePreviewGraph.coordinator.lensItems.collectAsState()
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
@@ -55,6 +56,8 @@ class MainActivity : ComponentActivity() {
                     showSettingsAction = requestCompleted && !cameraPermissionGranted,
                     uiState = uiState,
                     renderSpec = renderSpec,
+                    lensItems = lensItems,
+                    onLensSelected = visiblePreviewGraph.coordinator::selectLens,
                     onSurfaceAvailable = visiblePreviewGraph::publishSurface,
                     onSurfaceDestroyed = visiblePreviewGraph::surfaceDestroyed,
                     onOpenAppSettings = ::openAppSettings,

@@ -1,6 +1,7 @@
 package com.sahidcode404.camx.core.camera.session
 
 import com.sahidcode404.camx.core.camera.model.CameraTransportId
+import com.sahidcode404.camx.core.camera.model.PhysicalCameraId
 import com.sahidcode404.camx.core.camera.model.PreviewConfiguration
 import com.sahidcode404.camx.core.camera.model.PreviewConfigurationAttemptKind
 import com.sahidcode404.camx.core.settings.SettingsSnapshot
@@ -41,6 +42,27 @@ internal interface CameraOwnerPlatform {
         settings: SettingsSnapshot,
         attempt: PreviewConfigurationAttemptKind,
         callbacks: CameraSessionCallbacks,
+    )
+
+    /**
+     * Typed physical-output extension of the frozen CAMX-103 preview seam.
+     * Existing direct-preview fakes remain source-compatible through the default implementation.
+     */
+    fun configurePreviewTargeted(
+        device: CameraDeviceHandle,
+        surfaceToken: Any,
+        physicalCameraId: PhysicalCameraId?,
+        configuration: PreviewConfiguration,
+        settings: SettingsSnapshot,
+        attempt: PreviewConfigurationAttemptKind,
+        callbacks: CameraSessionCallbacks,
+    ) = configurePreview(
+        device = device,
+        surfaceToken = surfaceToken,
+        configuration = configuration,
+        settings = settings,
+        attempt = attempt,
+        callbacks = callbacks,
     )
 
     fun startRepeating(

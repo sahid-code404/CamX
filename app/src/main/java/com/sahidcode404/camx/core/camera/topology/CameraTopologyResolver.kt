@@ -230,7 +230,7 @@ object CameraTopologyResolver {
             "Preview-stream evidence exceeds the CAMX-107 bound"
         }
         require(item.capabilities.fpsRanges.size <= MAX_FPS_RANGES) {
-            "FPS evidence exceeds the CAMX-107 bound"
+            "FPS-range evidence exceeds the CAMX-107 bound"
         }
         require(item.capabilities.rawSizes.size <= MAX_RAW_SIZES) {
             "RAW-size evidence exceeds the CAMX-107 bound"
@@ -401,7 +401,7 @@ object CameraTopologyResolver {
 
     private fun floatKey(value: Float): String = value.toRawBits().toUInt().toString(16).padStart(8, '0')
 
-    private fun opaqueKey(value: String): String = "opaque:${stableHash("opaque-order|$value")}" 
+    private fun opaqueKey(value: String): String = "opaque:${stableHash("opaque-order|$value")}"
 
     private fun stableHash(value: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))

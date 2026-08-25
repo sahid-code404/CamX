@@ -1,9 +1,17 @@
 package com.sahidcode404.camx.core.camera.bootstrap
 
 import com.sahidcode404.camx.core.camera.diagnostics.CameraFailure
+import com.sahidcode404.camx.core.camera.lens.CameraLensProjection
+import com.sahidcode404.camx.core.camera.lens.CameraLensProjectionInput
+import com.sahidcode404.camx.core.camera.lens.CameraLensUiItem
+import com.sahidcode404.camx.core.camera.lens.CameraLensUiProjector
+import com.sahidcode404.camx.core.camera.lens.LensSelectionTarget
+import com.sahidcode404.camx.core.camera.lens.LensTestStatus
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
 import com.sahidcode404.camx.core.camera.model.CameraProfileFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraRoute
+import com.sahidcode404.camx.core.camera.model.CameraRouteId
+import com.sahidcode404.camx.core.camera.model.CameraTopologySnapshot
 import com.sahidcode404.camx.core.camera.model.CanonicalLensFingerprint
 import com.sahidcode404.camx.core.camera.model.DisplayRotation
 import com.sahidcode404.camx.core.camera.model.IntSize
@@ -100,7 +108,7 @@ internal interface VisiblePreviewSessionPort {
 }
 
 /**
- * Low-frequency production startup coordinator. Camera2 resources remain owned exclusively by
+ * Low-frequency production startup/switch coordinator. Camera2 resources remain owned exclusively by
  * CameraSessionController; this class owns orchestration, not devices/sessions.
  */
 class VisiblePreviewCoordinator internal constructor(
@@ -108,6 +116,8 @@ class VisiblePreviewCoordinator internal constructor(
     private val capabilitySource: SelectedSeedPreviewCapabilitySource,
     private val surfacePort: VisiblePreviewSurfacePort,
     private val session: VisiblePreviewSessionPort,
+    private val topology: StateFlow<CameraTopologySnapshot?> = MutableStateFlow(null),
+    private val runtimeApiLevel: Int = 23,
     private val settings: () -> SettingsSnapshot = { SettingsSnapshot() },
     private val mirrorFrontPreview: () -> Boolean = { true },
     private val policy: VisiblePreviewPolicyPort = VisiblePreviewPolicyPort(PreviewStreamPolicy::resolve),
@@ -119,19 +129,29 @@ class VisiblePreviewCoordinator internal constructor(
         VisiblePreviewUiState.WaitingForPermission,
     )
     private val mutableRenderSpec = MutableStateFlow<VisiblePreviewRenderSpec?>(null)
+    private val mutableLensItems = MutableStateFlow<List<CameraLensUiItem>>(emptyList())
+    private val statusByLens = LinkedHashMap<CanonicalLensFingerprint, LensTestStatus>()
 
     private var permissionGranted = false
     private var resumed = false
     private var displayRotation = DisplayRotation.ROTATION_0
     private var startupGeneration = 0L
     private var startupJob: Job? = null
+    private var activeSelection: ActiveCameraSelection? = null
+    private var preferredLens: CanonicalLensFingerprint? = null
 
     val uiState: StateFlow<VisiblePreviewUiState> = mutableUiState.asStateFlow()
     val renderSpec: StateFlow<VisiblePreviewRenderSpec?> = mutableRenderSpec.asStateFlow()
+    val lensItems: StateFlow<List<CameraLensUiItem>> = mutableLensItems.asStateFlow()
 
     init {
         scope.launch {
             session.state.collect(::projectControllerState)
+        }
+        scope.launch {
+            topology.collect {
+                refreshLensProjection()
+            }
         }
     }
 
@@ -142,9 +162,11 @@ class VisiblePreviewCoordinator internal constructor(
             permissionGranted = granted
             if (!granted) {
                 invalidateStartup()
+                clearOpeningStatuses()
                 mutableRenderSpec.value = null
                 session.pause()
                 mutableUiState.value = VisiblePreviewUiState.WaitingForPermission
+                refreshLensProjection()
             } else if (resumed) {
                 beginStartup()
             }
@@ -185,6 +207,7 @@ class VisiblePreviewCoordinator internal constructor(
         scope.launch {
             resumed = false
             invalidateStartup()
+            clearOpeningStatuses()
             mutableRenderSpec.value = null
             session.pause()
             mutableUiState.value = if (permissionGranted) {
@@ -192,6 +215,7 @@ class VisiblePreviewCoordinator internal constructor(
             } else {
                 VisiblePreviewUiState.WaitingForPermission
             }
+            refreshLensProjection()
         }
     }
 
@@ -202,6 +226,37 @@ class VisiblePreviewCoordinator internal constructor(
             mutableRenderSpec.value = null
             session.surfaceInvalidated(identity)
             if (permissionGranted && resumed) beginStartup()
+        }
+    }
+
+    /** Selects one current canonical topology lens. Raw Camera2 transport identities never cross this API. */
+    fun selectLens(canonicalFingerprint: CanonicalLensFingerprint) {
+        if (shutdownRequested.get()) return
+        scope.launch {
+            if (!permissionGranted || !resumed) return@launch
+            val projection = currentLensProjection()
+            val target = projection.targets[canonicalFingerprint] ?: return@launch
+            val currentCanonical = activeSelection?.routeId?.let(::canonicalForRoute)
+            if (currentCanonical == canonicalFingerprint &&
+                activeSelection?.routeId == target.routeId &&
+                statusByLens[canonicalFingerprint] == LensTestStatus.VERIFIED
+            ) return@launch
+
+            preferredLens = canonicalFingerprint
+            statusByLens.keys.toList().forEach { lens ->
+                if (statusByLens[lens] == LensTestStatus.VERIFIED) statusByLens[lens] = LensTestStatus.ADVERTISED
+            }
+            statusByLens[canonicalFingerprint] = LensTestStatus.OPENING
+            activeSelection = null
+            mutableRenderSpec.value = null
+            mutableUiState.value = VisiblePreviewUiState.Starting
+            refreshLensProjection()
+
+            invalidateStartup()
+            val generation = startupGeneration
+            startupJob = scope.launch {
+                runTopologyStartup(generation, target, releaseCurrentPreview = true)
+            }
         }
     }
 
@@ -233,12 +288,21 @@ class VisiblePreviewCoordinator internal constructor(
         if (!permissionGranted || !resumed || shutdownRequested.get()) return
         invalidateStartup()
         val generation = startupGeneration
-        startupJob = scope.launch {
-            runStartup(generation)
+        val preferredTarget = preferredLens?.let { currentLensProjection().targets[it] }
+        if (preferredTarget != null) {
+            statusByLens[preferredTarget.canonicalFingerprint] = LensTestStatus.OPENING
+            refreshLensProjection()
+            startupJob = scope.launch {
+                runTopologyStartup(generation, preferredTarget, releaseCurrentPreview = false)
+            }
+        } else {
+            startupJob = scope.launch {
+                runSeedStartup(generation)
+            }
         }
     }
 
-    private suspend fun runStartup(generation: Long) {
+    private suspend fun runSeedStartup(generation: Long) {
         mutableUiState.value = VisiblePreviewUiState.Starting
         val route = try {
             seedSource.discoverSeed()
@@ -269,9 +333,61 @@ class VisiblePreviewCoordinator internal constructor(
                 return
             }
         }
-        val selection = bootstrapSelection(route, selectedCapabilities)
-        mutableUiState.value = VisiblePreviewUiState.WaitingForSurface
+        runResolvedPreview(
+            generation = generation,
+            target = ResolvedPreviewTarget(
+                selection = bootstrapSelection(route, selectedCapabilities),
+                route = route,
+                capabilities = selectedCapabilities,
+                canonicalLens = null,
+            ),
+        )
+    }
 
+    private suspend fun runTopologyStartup(
+        generation: Long,
+        target: LensSelectionTarget,
+        releaseCurrentPreview: Boolean,
+    ) {
+        if (releaseCurrentPreview) {
+            try {
+                session.pause()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                if (isCurrent(generation)) failLens(target.canonicalFingerprint)
+                return
+            }
+            if (!isCurrent(generation)) return
+        }
+        val selection = ActiveCameraSelection(
+            canonicalLensFingerprint = target.canonicalFingerprint,
+            profileFingerprint = target.profileFingerprint,
+            routeId = target.routeId,
+            selectionGeneration = SelectionGeneration(0L),
+            sessionGeneration = SessionGeneration(0L),
+        )
+        runResolvedPreview(
+            generation = generation,
+            target = ResolvedPreviewTarget(
+                selection = selection,
+                route = target.route,
+                capabilities = SelectedSeedPreviewCapabilities(
+                    capabilities = target.route.capabilities,
+                    sensorOrientationDegrees = target.previewMetadata.sensorOrientationDegrees,
+                    lensFacing = target.previewMetadata.lensFacing,
+                ),
+                canonicalLens = target.canonicalFingerprint,
+            ),
+        )
+    }
+
+    private suspend fun runResolvedPreview(
+        generation: Long,
+        target: ResolvedPreviewTarget,
+    ) {
+        if (!isCurrent(generation)) return
+        mutableUiState.value = VisiblePreviewUiState.WaitingForSurface
         var lease: VisiblePreviewLease? = null
         var handedToController = false
         try {
@@ -280,11 +396,11 @@ class VisiblePreviewCoordinator internal constructor(
             val settingsSnapshot = settings()
             val policyResult = policy.resolve(
                 PreviewPolicyInput(
-                    capabilities = selectedCapabilities.capabilities,
+                    capabilities = target.capabilities.capabilities,
                     viewSize = lease.viewSize,
-                    sensorOrientationDegrees = selectedCapabilities.sensorOrientationDegrees,
+                    sensorOrientationDegrees = target.capabilities.sensorOrientationDegrees,
                     displayRotation = displayRotation,
-                    lensFacing = selectedCapabilities.lensFacing,
+                    lensFacing = target.capabilities.lensFacing,
                     mirrorFrontPreview = mirrorFrontPreview(),
                     requestedStreamType = settingsSnapshot.previewStreamType,
                     highResolutionViewfinder = settingsSnapshot.highResolutionViewfinder,
@@ -295,6 +411,7 @@ class VisiblePreviewCoordinator internal constructor(
             val supported = when (policyResult) {
                 is PreviewPolicyResult.Supported -> policyResult
                 is PreviewPolicyResult.Unsupported -> {
+                    target.canonicalLens?.let(::failLens)
                     mutableUiState.value = VisiblePreviewUiState.Unavailable(
                         VisiblePreviewProblem.Policy(policyResult),
                     )
@@ -311,8 +428,8 @@ class VisiblePreviewCoordinator internal constructor(
             if (!isCurrent(generation)) return
             try {
                 session.startPreview(
-                    selection = selection,
-                    route = route,
+                    selection = target.selection,
+                    route = target.route,
                     lease = lease,
                     configuration = supported.configuration,
                     settings = settingsSnapshot,
@@ -322,6 +439,7 @@ class VisiblePreviewCoordinator internal constructor(
                 throw cancelled
             } catch (_: Throwable) {
                 if (isCurrent(generation)) {
+                    target.canonicalLens?.let(::failLens)
                     mutableUiState.value = VisiblePreviewUiState.Error(
                         VisiblePreviewProblem.Startup(VisiblePreviewStartupFailure.PREVIEW_START_FAILED),
                     )
@@ -344,6 +462,36 @@ class VisiblePreviewCoordinator internal constructor(
 
     private fun projectControllerState(state: CameraEngineState) {
         if (!permissionGranted || !resumed || shutdownRequested.get()) return
+        val selection = stateSelection(state)
+        val lens = selection?.routeId?.let(::canonicalForRoute)
+        when (state) {
+            is CameraEngineState.Opening,
+            is CameraEngineState.ConfiguringPreview,
+            is CameraEngineState.Switching,
+            -> lens?.let { statusByLens[it] = LensTestStatus.OPENING }
+            is CameraEngineState.Previewing -> {
+                activeSelection = state.selection
+                if (lens != null) {
+                    if (state.firstFrameVerified) {
+                        statusByLens.keys.toList().forEach { fingerprint ->
+                            if (fingerprint != lens && statusByLens[fingerprint] == LensTestStatus.VERIFIED) {
+                                statusByLens[fingerprint] = LensTestStatus.ADVERTISED
+                            }
+                        }
+                        statusByLens[lens] = LensTestStatus.VERIFIED
+                        preferredLens = lens
+                    } else {
+                        statusByLens[lens] = LensTestStatus.OPENING
+                    }
+                }
+            }
+            is CameraEngineState.RecoverableError,
+            is CameraEngineState.StructuralError,
+            -> lens?.let(::failLens)
+            else -> Unit
+        }
+        refreshLensProjection()
+
         val render = mutableRenderSpec.value
         when (state) {
             is CameraEngineState.Opening,
@@ -369,6 +517,84 @@ class VisiblePreviewCoordinator internal constructor(
             else -> Unit
         }
     }
+
+    private fun stateSelection(state: CameraEngineState): ActiveCameraSelection? = when (state) {
+        is CameraEngineState.WaitingForSurface -> state.selection
+        is CameraEngineState.Opening -> state.selection
+        is CameraEngineState.ConfiguringPreview -> state.selection
+        is CameraEngineState.Previewing -> state.selection
+        is CameraEngineState.Switching -> state.to
+        is CameraEngineState.Pausing -> state.selection
+        is CameraEngineState.RecoverableError -> state.selection
+        is CameraEngineState.StructuralError -> state.selection
+        else -> null
+    }
+
+    private fun currentLensProjection(): CameraLensProjection = CameraLensUiProjector.project(
+        CameraLensProjectionInput(
+            topology = topology.value,
+            runtimeApiLevel = runtimeApiLevel,
+            activeSelection = activeSelection,
+            statusByLens = statusByLens,
+        ),
+    )
+
+    private fun refreshLensProjection() {
+        val snapshot = topology.value
+        if (snapshot == null) {
+            mutableLensItems.value = emptyList()
+            return
+        }
+        val validLenses = snapshot.canonicalLenses.map { it.fingerprint }.toSet()
+        statusByLens.keys.retainAll(validLenses)
+
+        val previewing = session.state.value as? CameraEngineState.Previewing
+        if (previewing?.firstFrameVerified == true) {
+            val canonical = canonicalForRoute(previewing.selection.routeId)
+            if (canonical != null) {
+                statusByLens.keys.toList().forEach { fingerprint ->
+                    if (fingerprint != canonical && statusByLens[fingerprint] == LensTestStatus.VERIFIED) {
+                        statusByLens[fingerprint] = LensTestStatus.ADVERTISED
+                    }
+                }
+                activeSelection = previewing.selection
+                statusByLens[canonical] = LensTestStatus.VERIFIED
+                preferredLens = canonical
+            }
+        }
+
+        var projection = currentLensProjection()
+        val preferred = preferredLens
+        if (preferred != null && preferred !in projection.targets) {
+            preferredLens = null
+            projection = currentLensProjection()
+        }
+        mutableLensItems.value = projection.items
+    }
+
+    private fun canonicalForRoute(routeId: CameraRouteId): CanonicalLensFingerprint? = topology.value
+        ?.canonicalLenses
+        ?.firstOrNull { lens -> lens.profiles.any { profile -> profile.route.id == routeId } }
+        ?.fingerprint
+
+    private fun clearOpeningStatuses() {
+        statusByLens.keys.toList().forEach { lens ->
+            if (statusByLens[lens] == LensTestStatus.OPENING) statusByLens[lens] = LensTestStatus.ADVERTISED
+        }
+    }
+
+    private fun failLens(lens: CanonicalLensFingerprint) {
+        statusByLens[lens] = LensTestStatus.FAILED
+        if (preferredLens == lens) preferredLens = null
+        refreshLensProjection()
+    }
+
+    private data class ResolvedPreviewTarget(
+        val selection: ActiveCameraSelection,
+        val route: CameraRoute,
+        val capabilities: SelectedSeedPreviewCapabilities,
+        val canonicalLens: CanonicalLensFingerprint?,
+    )
 
     private companion object {
         fun bootstrapSelection(

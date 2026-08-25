@@ -50,6 +50,10 @@ internal class VisiblePreviewRapidSwitchState(
         lastOpeningKey = null
     }
 
+    fun recordVerifiedSelection(selection: ActiveCameraSelection) {
+        lastVerifiedSelection = selection
+    }
+
     fun clearLatestIf(lens: CanonicalLensFingerprint?) {
         if (lens != null && latestRequestedLens == lens) latestRequestedLens = null
     }
@@ -76,9 +80,6 @@ internal class VisiblePreviewRapidSwitchState(
     }
 
     fun observe(state: CameraEngineState) {
-        if (state is CameraEngineState.Previewing && state.firstFrameVerified) {
-            lastVerifiedSelection = state.selection
-        }
         if (latestTapNs == null) return
         when (state) {
             is CameraEngineState.Opening -> {

@@ -5,6 +5,11 @@ camera-control context. Every authoritative mutation is a short non-suspending c
 the camera dispatcher; waits and cleanup execute outside it. Every transition emits a low-frequency
 immutable snapshot; frame callbacks update bounded metrics, not state flow.
 
+The states below describe the CAMX-108 one-shot camera transaction. Its single request is not a future
+computational burst/video frame-count policy. Computational jobs use the separate lifecycle described
+by [`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md) and cannot extend this state
+machine to keep preview restoration waiting for reconstruction.
+
 ## States
 
 | State | Resources that may be live | Meaning |

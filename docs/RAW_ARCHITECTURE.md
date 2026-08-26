@@ -1,6 +1,9 @@
 # RAW Transaction Architecture
 
-RAW is a bounded state transition beneath the sole session owner, not a second camera engine.
+RAW is a bounded state transition beneath the sole session owner, not a second camera engine. CAMX-108
+is the current implementation frontier and establishes this trustworthy one-shot acquisition primitive;
+it does not implement burst capture, computational reconstruction, or RAW video. Those later contracts
+are frozen separately in [`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md).
 
 ```text
 PREVIEWING -> CONFIGURING_RAW -> CAPTURING_RAW -> PAIRING_RAW
@@ -18,9 +21,11 @@ Duplicate, invalid, overflowed, timed-out, cancelled, and stale images close det
 `CameraSessionOutputPlan` has only `previewOnly` and token-bound `temporaryRaw` factories, while
 `CameraOutputBinding` rejects RAW with a repeating lifetime; CI unit tests encode this invariant.
 
-The paired image transfers once to an I/O writer. `MediaStoreTransaction` inserts pending, writes,
+The paired image transfers once to the sensor-DNG I/O boundary. `MediaStoreTransaction` inserts pending, writes,
 publishes on success, and attempts deletion on every failure. A failed cleanup is attached to the
-primary failure for diagnosis; CAMX-108 adds recovery for a surviving pending row. TIFF orientation metadata derives from shutter
-context; RAW pixels are not rotated. Storage/encoding failure cannot change route trust or failover.
+primary failure for diagnosis; CAMX-108 adds recovery for a surviving pending row. TIFF orientation
+metadata derives from shutter context; RAW pixels are not rotated. Storage/encoding failure cannot
+change route trust or failover. This one-shot path is the future `SensorDngWriter` input boundary; it
+does not authorize a computational DNG writer to copy sensor metadata onto reconstructed samples.
 Only structural RAW profile rejection may try an unattempted sibling under the exact same canonical
-fingerprint. Full capture remains CAMX-108, not part of this foundation claim.
+fingerprint.

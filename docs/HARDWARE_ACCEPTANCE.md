@@ -21,3 +21,18 @@ For every visible canonical lens/profile combination, exercise:
 Compare valid-cache startup and lens-switch median/p90 to the CameX checkpoint on the same hardware.
 A failure record includes trace and resource snapshots; it must not be converted into a universal
 device quirk until generic paths and scope tests satisfy the constitution.
+
+## Future computational certification
+
+Computational photo/video support is never inferred from the foundation matrix above. The authoritative
+exact-profile certificate key and evidence progression are defined in
+[`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md). Physical qualification must
+bind canonical lens, route/profile, sensor pixel mode, source format, dimensions, FPS/exposure policy,
+stream combination, stabilization, OS/provider environment, storage class, and the exact algorithm,
+backend, precision, container, and codec versions.
+
+Evidence advances separately through discovery, advertised capability, configuration, verified frame,
+Sensor photo, computational photo, sustained Sensor video, deferred computational video, realtime
+computational video, and interoperability certification. A failed cohort disables only that exact
+configuration; it does not create manufacturer/model/SoC routing and does not invalidate unrelated
+profiles.

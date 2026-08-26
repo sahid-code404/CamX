@@ -10,8 +10,9 @@ architecture migration.
    `CameraCaptureSession`, session output, and camera callback dispatcher.
 2. UI never opens or closes a `CameraDevice`; it issues typed intent to the runtime boundary.
 3. Discovery reads metadata but never opens a `CameraDevice`.
-4. RAW capture and DNG writers never open a `CameraDevice`; a bounded transaction borrows a lease
-   from the session owner.
+4. RAW capture may borrow only a bounded transaction lease from the session owner. DNG writers
+   consume immutable transaction inputs; neither may open a `CameraDevice` or own session/output
+   authority.
 5. Camera IDs are opaque transport identifiers. Manufacturer, model, SoC, sensor name, and numeric
    ID have no production routing meaning.
 6. Advertised topology is evidence, not runtime trust. Metadata, preview, and RAW trust are separate.
@@ -58,8 +59,28 @@ architecture migration.
 25. CI build, emulator runtime, and physical-device results are separate evidence classes. A green
     build or static APK/ELF inspection cannot be reported as API-23 launch evidence or physical-camera
     compatibility.
-26. Phase 3 processing consumes acquisition outputs behind `ImageProcessor`; it cannot change the
-    Phase-2 camera ownership model without an explicit architecture migration.
+26. Computational processing consumes immutable, generation-bound acquisition handoffs; it cannot
+    change the camera ownership model without an explicit Tier-A architecture migration.
+27. Representation truth is structural. Public interpretable sensor-domain data, camera-processed
+    data, opaque transport, Sensor negatives, computational negatives, and processed-source masters
+    are distinct types and may not be relabeled for product convenience.
+28. Sensor products contain no CamX sample-changing reconstruction. Computational CFA output is legal
+    only on a genuine CFA grid; demosaiced, super-resolved, geometry-reconstructed, or full-color
+    output is linear and may not be remosaiced merely to look like Sensor RAW.
+29. RAW-video container and codec implementations are replaceable behind frozen contracts.
+    `PACKED_NONE` is the mandatory admission-safe codec baseline; capture admission cannot depend on
+    an expected compression ratio.
+30. V1 computational execution is bounded, lifecycle-scoped, and in-process. No `Service`,
+    `ForegroundService`, `JobService`, or `WorkManager` is introduced merely to host compute; a
+    separate compute process requires a future Tier-A ADR and prototype.
+31. Computational support is certified for an exact profile and implementation configuration.
+    Discovery, advertised capability, CI, emulator evidence, and physical-device certification remain
+    different evidence states.
+
+The authoritative detailed contract for invariants 26-31 is
+[`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md). Its Revision 2 semantic and
+constitutional decisions are frozen; implementation candidates remain provisional until their stated
+prototype and physical-proof gates pass.
 
 ## Simplicity test
 

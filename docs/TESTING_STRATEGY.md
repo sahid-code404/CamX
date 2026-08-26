@@ -7,7 +7,7 @@ legality, typed failure policy, selection/session/capture generation rejection, 
 geometry, bounded actual-FPS metrics, trace overflow, RAW pairing/closure, DNG orientation,
 MediaStore rollback, cache codecs, settings memory-first behavior, and OTA rejection matrices.
 
-CAMX-100A additionally tests that requested-configuration rejection is nonstructural and enables only
+The accepted API-23/asynchronous-ownership foundation additionally tests that requested-configuration rejection is nonstructural and enables only
 one `REQUESTED -> SAFE_BASELINE` attempt, while safe-baseline rejection alone changes preview trust and
 permits same-canonical failover. Transition tests require preserved optical/profile/route/selection
 identity plus a strictly newer session generation. Pure asynchronous-ownership tests permute A/B/C
@@ -47,3 +47,13 @@ builds measure startup and switching but never replace debug OTA or API-floor sm
 Only `HARDWARE_ACCEPTANCE.md` establishes actual support. CI language is restricted to build/policy/
 ownership correctness; emulator language is restricted to that virtual image. Neither can claim lens,
 RAW, orientation, FPS, thermal, lifecycle-soak, or leak compatibility on physical hardware.
+
+## Future computational architecture validation
+
+The test obligations for the frozen computational architecture are specified in
+[`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md). They add representation and
+graph type-law tests, resource-plan arithmetic and saturation, deterministic scalar golden outputs,
+optimized-backend differential tests, codec bit-exact/fuzz tests, container truncation/corruption/
+power-loss recovery, DNG semantic and interoperability cohorts, manifest/hash binding, and exact-profile
+physical certification. These are future milestone gates, not evidence that CAMX-108 implements the
+computational engine.

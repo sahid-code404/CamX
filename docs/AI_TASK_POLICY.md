@@ -55,6 +55,7 @@ scripts/package-dev-ota.sh
 scripts/verify-packaged-ota.sh
 docs/ARCHITECTURE_CONSTITUTION.md
 docs/ARCHITECTURE_PLAN.md
+docs/COMPUTATIONAL_RAW_ARCHITECTURE.md
 docs/CAMERA_STATE_MACHINE.md
 docs/THREADING_MODEL.md
 docs/ERROR_MODEL.md

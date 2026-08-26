@@ -32,3 +32,17 @@ be used for accurate CPU/allocation profiling and never replaces it.
 Optimization priority follows measured critical cost: surface availability, open dependencies,
 characteristics reads, session configuration, cache parsing, ImageReader/session churn, copies, GC,
 and JNI traffic. Moving code to C++ is not itself evidence of improvement.
+
+## Computational imaging constitution
+
+The frozen computational performance contract is defined in
+[`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md). Before acquisition, a compiled
+plan MUST reserve bounded source leases, frame count or temporal window, queue entries, native pools,
+graph workspace, output bytes, and writer state. It MUST NOT use allocation failure as a capability
+probe, build an unbounded full-frame stack, perform heavy work on Camera2 callbacks, perform disk I/O
+inside camera mutation ownership, or depend on an optimistic compression ratio.
+
+High-resolution work MUST be tiled or incremental where a full-frame duplicate would violate the
+declared plan. Sensor and video gaps are explicit evidence; software MUST NOT silently drop arbitrary
+frames. Performance claims use distributions at thermal steady state and remain keyed to the exact
+source profile, algorithm, backend, precision, codec, container, storage class, OS, and build SHA.

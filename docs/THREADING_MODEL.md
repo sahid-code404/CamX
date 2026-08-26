@@ -1,13 +1,16 @@
 # Threading Model
 
-CamX uses four execution domains and no implicit global work.
+CamX uses explicit execution domains and no implicit global work. The imaging coordinator, CPU pool,
+and GPU actor below are frozen future boundaries; CAMX-108 does not implement them.
 
 | Domain | Owner | Permitted work | Forbidden work |
 |---|---|---|---|
 | Main | Android/Compose | Activity lifecycle, permission, stable view ownership, low-frequency UI state | Camera callbacks, discovery, file/network I/O, per-frame formatting |
 | Camera control | `CameraSessionController` | CameraDevice/session calls, callback admission, state transitions, permit consumption, generation checks | DataStore, network, DNG I/O, CPU image processing, awaiting work while the mutation gate is held |
 | I/O | repositories/transactions | Cache/settings atomic persistence, MediaStore writes, post-frame OTA | CameraDevice/session mutation, UI rendering |
-| Native workers | native processing runtime | Bounded future frame processing and native diagnostics | Camera control plane, unbounded submission, first-frame initialization |
+| Imaging coordination | one in-process job coordinator | admission, typed DAG scheduling, cancellation, reservation and commit state | Camera control, unbounded job concurrency, per-pixel work |
+| CPU/native workers | one bounded process pool | reference/qualified node execution and native diagnostics | Camera control plane, thread-per-frame, unbounded submission, first-frame initialization |
+| GPU submission | one in-process GPU actor | qualified command submission, fences, context and device-loss handling | Camera control, multiple implicit owners, algorithm-semantic changes |
 
 The camera dispatcher is one long-lived component created and destroyed with the app camera graph,
 not per lens or operation. `CameraStateMutationGate` serializes open, switch, close, pause, resume,
@@ -31,6 +34,13 @@ Cancellation is cooperative at transaction boundaries. Cancellation does not tra
 ownership: the current owner invalidates admission before closing its detached lease. No `GlobalScope`,
 `runBlocking`, `Thread.sleep`, busy wait, polling loop, thread-per-frame, or unbounded executor is
 permitted.
+
+Computational execution consumes an immutable acquisition handoff and uses a job generation distinct
+from camera selection/session generations. Preview restoration waits only for acquisition resources to
+be released or durably spooled, never for reconstruction to finish. V1 work is lifecycle-scoped and
+in-process; backgrounding cancels or checkpoints according to source durability. No service or work
+scheduler is introduced merely to host compute. See
+[`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md).
 
 Immutable snapshots are published through `StateFlow` or `AtomicReference`. Ordinary readers never
 lock. Mutable collections remain confined to one dispatcher or protected by a small local lock and

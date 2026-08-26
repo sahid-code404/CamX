@@ -28,6 +28,10 @@ Classification is centralized and exhaustive. A transient error is never persist
 rejection. An output error is never converted to a camera-route error. Retry budgets are bounded and
 reset only by explicit success or lifecycle policy; they are not loops hidden inside callbacks.
 
+Future graph, backend, codec, container, DNG, manifest, and computational-validation failures remain
+typed imaging/output failures and do not change camera-route trust. Their source-retention and fallback
+boundaries are defined in [`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md).
+
 ## Requested configuration versus safe baseline
 
 `RequestedConfigurationRejected` covers optional FPS, exact range, high-resolution preview, optional

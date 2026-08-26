@@ -1,12 +1,15 @@
-# CamX Architecture Foundation Plan
+# CamX Architecture Plan
 
-Status: accepted for the `rewrite/architecture-foundation` checkpoint.
+Status: foundation accepted; current implementation frontier is CAMX-108 one-shot RAW capture.
+CamX Computational RAW Architecture Revision 2 is semantically and constitutionally frozen in
+[`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md). No computational milestone is
+implemented by that documentation freeze.
 
-## Sprint boundary
+## Historical foundation sprint boundary
 
-This sprint creates a compilable, launchable application and executable contracts. It does not
-claim complete discovery, physical-camera validation, RAW capture, or computational photography.
-The foundation is considered complete only when the JVM tests, native tests, architecture guards,
+That foundation sprint created a compilable, launchable application and executable contracts. It did
+not claim complete discovery, physical-camera validation, RAW capture, or computational photography.
+The foundation checkpoint was considered complete only when the JVM tests, native tests, architecture guards,
 lint, all-ABI JNI build, signed `devOta` APK, package check, and signer check pass. API-23 support has
 an additional exact contract: the Android model and produced APK declare 23, the baseline native core
 is built for and linkable on 23 in every ABI, and the development APK carries both v1 and v2
@@ -28,9 +31,10 @@ optional NDK  -> later Tier-A public metadata/data-plane modules, capability-gat
 ```
 
 No lower layer depends on a feature package. Discovery cannot depend on session. RAW cannot open a
-camera. Native processing cannot reach UI. The future processing graph accepts acquired frame
-objects and has no authority over the acquisition session. No optional native module is a load-time
-dependency of the API-23 core, and no native module may become a second camera control plane.
+camera. Native processing cannot reach UI. The future processing graph accepts immutable,
+representation-typed acquisition handoffs and has no authority over the acquisition session. No
+optional native module is a load-time dependency of the API-23 core, and no native module may become
+a second camera control plane.
 
 ## Foundation increments
 
@@ -66,6 +70,28 @@ RAW pairing, and signer changes.
 Tier-B work implements pure policy or diagnostics against those contracts. Tier-C work is restricted
 to presentation, resources, documentation, and isolated tests. Protected paths and ticket-level
 allowed/forbidden files are defined in `AI_TASK_POLICY.md` and `IMPLEMENTATION_BACKLOG.md`.
+
+## Computational architecture dependency lane
+
+CAMX-108 establishes the trustworthy one-shot sensor acquisition primitive. It feeds M1 rather than
+absorbing future burst, graph, codec, container, DNG, or video implementation. The frozen dependency
+order is:
+
+```text
+M0 -> M1
+M1 -> {M2A, M2B, M3, M8A}
+M3 -> M4 -> M5 -> M6 -> M7
+M7 -> {M8B, M9}
+M2A + M2B + M4 -> M10
+M7 + M10 -> M11
+M9 + M10 + M11 -> M12
+M7 + M11 -> M13 -> M14
+```
+
+M2A selects or rejects a RAW-video container behind `RawVideoContainerContract`; M2B selects optional
+reversible codecs while retaining mandatory `PACKED_NONE`. M8A validates Sensor DNG independently;
+M8B chooses a computational DNG implementation only after a real computational-negative contract
+exists. The master architecture owns milestone goals, scope, proof gates, and rollback boundaries.
 
 ## Exit evidence
 

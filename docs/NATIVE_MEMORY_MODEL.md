@@ -17,8 +17,8 @@ manifest around one, violates the constitution.
 
 - Native ownership is RAII only. Owning bare pointers, owning `void*`, and manual multi-exit cleanup
   are forbidden.
-- `UniqueNdkOwner` is an API-neutral, non-copyable ownership mechanism. CAMX-100A instantiates no
-  Camera NDK, `AImage`, `AImageReader`, or `AHardwareBuffer` owner in the baseline.
+- `UniqueNdkOwner` is an API-neutral, non-copyable ownership mechanism. The accepted foundation
+  baseline instantiates no Camera NDK, `AImage`, `AImageReader`, or `AHardwareBuffer` owner.
 - `NativeBufferPool`, `BoundedTimestampIndex`, work queues, and `NativeTraceBuffer` require capacity
   at construction. Overflow has an explicit drop/reject action.
 - JNI global references require a named owner and debug counter. No native object retains an
@@ -28,7 +28,7 @@ manifest around one, violates the constitution.
 
 ## Optional public-native capabilities
 
-| Capability | Public library | Minimum API | CAMX-100A status |
+| Capability | Public library | Minimum API | Accepted-baseline status |
 |---|---|---:|---|
 | Camera NDK metadata evidence | `libcamera2ndk.so` | 24 | `Unsupported`; no backend or loader ships |
 | Media image/reader ownership | `libmediandk.so` | 24 | `Unsupported`; no backend or loader ships |
@@ -65,16 +65,24 @@ unapproved weak imports fail closed. This static proof does not replace an API-2
 
 ## Future processing dispatch
 
-`RawFrame -> RawFrameSet.takeFrames() -> ProcessingGraph -> ImageProcessor` is the stable one-time
-ownership-transfer boundary; owning pair/frame-set wrappers are intentionally non-copyable.
-Scalar code is the reference. Optional ARM64 NEON is selected by runtime CPU feature detection, not
-vendor identity, and must pass numerical equivalence tests. Vulkan is lazy, post-frame,
-capability-detected, failure-isolated, cached, and always has a CPU fallback.
+The current `RawFrame -> RawFrameSet.takeFrames() -> ProcessingGraph -> ImageProcessor` seam is a
+foundation ownership placeholder. The frozen future boundary accepts the representation-typed,
+generation-bound acquisition handoff defined by
+[`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md); its graph compiler proves
+workspace, queue, lifetime, precision, and backend legality before execution. Owning frame and
+frame-set wrappers remain non-copyable.
+
+V1 compute remains in-process: one job coordinator owns a bounded CPU/native pool, one GPU submission
+actor, and bounded native arenas. Scalar code is the deterministic reference. Optional SIMD/Vulkan is
+selected by runtime capability evidence, not vendor identity, and must pass differential tests.
+Recoverable backend failure is contained to the job and falls back according to the compiled plan;
+worker threads cannot contain a fatal native signal or fatal in-process driver failure. A separate
+process is a provisional future option, not a V1 requirement.
 
 ## Leak acceptance
 
 Debug counters cover native images, hardware buffers, allocated buffer bytes, worker count, queue
 depth, and JNI global references. After repeated switch/capture/pause/resume cycles, counts must
 return to the same quiescent band. Sanitizer/host tests cover bounded structures; hardware soak tests
-cover any future public-NDK owners. Zero image/hardware-buffer counts in CAMX-100A mean those optional
-backends are not implemented, not that their ownership has been hardware-validated.
+cover any future public-NDK owners. Zero image/hardware-buffer counts in the accepted baseline mean
+those optional backends are not implemented, not that their ownership has been hardware-validated.

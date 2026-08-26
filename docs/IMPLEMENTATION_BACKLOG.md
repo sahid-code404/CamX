@@ -3,7 +3,13 @@
 Tickets are intentionally small and path-bounded. “Forbidden” is absolute unless a new Tier-A
 architecture ticket supersedes it.
 
-## CAMX-100A — API-23 platform and asynchronous ownership contract
+Current implementation frontier: **CAMX-108 — one-shot RAW capture transaction**. Earlier entries are
+historical prerequisites; later numbered tickets are not evidence of implementation. The separate
+computational-imaging M0-M14 dependency roadmap is frozen in
+[`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md) and does not authorize work
+under any milestone without a new path-bounded ticket.
+
+## Historical prerequisite: CAMX-100A — API-23 platform and asynchronous ownership contract
 
 - Tier: A.
 - Goal: make Android API 23 the exact application/native baseline and close the preview fallback,

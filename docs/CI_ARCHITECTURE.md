@@ -52,6 +52,11 @@ review; a regular-expression guard does not prove semantic correctness.
   evidence.
 - Only `HARDWARE_ACCEPTANCE.md` records physical lens, logical/physical routing, FPS, RAW, lifecycle,
   thermal, and leak behavior. Neither static CI nor an emulator permits a physical-device claim.
+- Future computational CI may prove representation/graph contracts, deterministic reference results,
+  bounded-resource tests, codec/container fuzz properties, DNG structure, and artifact identity only.
+  It cannot certify sensor truth, image quality, sustained RAW-video cadence, power-loss durability,
+  energy, thermals, timestamp relationships, or decoder interoperability on physical hardware. See
+  [`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md).
 
 Final reporting names the exact commit, CI run and conclusion, version code/name, APK SHA-256, signer
 SHA-256, artifact/download URL, and which of static CI, API-23 emulator, and physical-device evidence

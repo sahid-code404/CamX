@@ -15,6 +15,12 @@ the exact one-shot operation permit must be consumed before a delivered resource
 | RAW `ImageReader` | `RawCaptureTransaction` under session owner | `CONFIGURING_RAW` | transaction `finally` before preview restored | no | close reader and drain/close images |
 | RAW `Image` | timestamp pairer, then transaction/writer | image callback acquire | orphan/overflow/stale/timeout or writer completion | once, pairer to writer | close immediately |
 | Capture metadata/result | `RawCaptureTransaction` | capture callback | pair/write completion or timeout | immutable reference only | discard |
+| Immutable acquisition handoff (future) | acquisition transaction, then one imaging job after explicit move | exact current permit plus pre-admitted destination | source lease release or durable spool commit | once only | reject handoff and release only its source lease |
+| Imaging job (future) | one in-process `ImagingJobCoordinator` | compiled graph and complete resource reservation | verified commit, cancellation, or typed failure cleanup | no | stale job generation cannot publish |
+| Computational negative (future) | imaging job, then exactly one output transaction after explicit move | graph completion with representation proof | committed artifact or failed-output cleanup | once only | stale output transaction cannot publish |
+| Encoded RAW-video payload (future) | codec lease, then container writer after explicit move | bounded reversible encode or `PACKED_NONE` | durable frame/group acceptance or release on failure | once only | release; record no frame commit |
+| RAW-video active segment (future) | one container-writer transaction | recording admission and segment open | durable seal or recoverable incomplete-tail closure | no | stale writer cannot advance manifest/checkpoint |
+| Computational DNG transaction (future) | `ComputationalDngWriter` output transaction | completed computational negative plus output-derived metadata | reopen/semantic/digest validation and publish, or cleanup | no | stale transaction cannot publish |
 | Pending MediaStore row | `MediaStoreTransaction` | insert with `IS_PENDING=1` | publish on success; attempt delete and report cleanup failure | no | delete if transaction owns it; CAMX-108 recovers a surviving row |
 | `AImage` (future optional) | API-24 Tier-A media-image module | only after API/library/symbol capability succeeds | optional owner destructor | explicit move only | unavailable/unsupported leaves Java ownership authoritative |
 | `AHardwareBuffer` (future optional) | API-26 Tier-A hardware-buffer module | only after `libnativewindow.so` and symbol capability succeeds | optional owner destructor | move only unless an explicit acquire creates another reference | unavailable/unsupported creates no native owner |
@@ -26,7 +32,8 @@ the exact one-shot operation permit must be consumed before a delivered resource
 | OTA download `.part` | `UpdateRepository` transaction | user starts download | rename after verification or delete on failure/cancel | no | delete stale part |
 | OTA state | `UpdateRepository` | post-frame/manual check | repository lifecycle | immutable sharing | do not publish stale request |
 | Camera callback thread | `CameraSessionController` | owner construction | after permit invalidation and all detached Camera2 resources close | no | callbacks require exact permit; generation equality alone cannot admit them |
-| Native workers | native processing runtime | lazy post-frame initialization | runtime shutdown/background memory trim | no | discard queued stale token |
+| CPU/native worker pool (future) | one in-process imaging runtime | lazy after graph admission | runtime shutdown/background memory trim after jobs cancel/checkpoint | no | discard queued stale job token |
+| GPU submission actor (future) | one in-process imaging runtime | lazy only after qualified backend selection | device loss, runtime shutdown, or background trim after fence cleanup | no | discard stale job submission; never mutate camera state |
 
 Debug `CameraResourceSnapshot` reads counters owned by each boundary. It is diagnostic observation,
 not ownership transfer. `CloseOnceCameraResource` resolves each callback delivery once as adopted or
@@ -35,3 +42,7 @@ and already-adopted deliveries receive no cleanup authority. Pause, switch, and 
 admission and detach current resources under the non-suspending mutation gate; close calls run outside
 it. `CameraCleanupPlan` attempts every detached close once, retains later failures as suppressed detail,
 and only the current cleanup permit may publish completion.
+
+Future computational ownership entries are frozen contracts, not CAMX-108 implementation. Their full
+representation, source-retention, codec/container, and execution rules are authoritative in
+[`COMPUTATIONAL_RAW_ARCHITECTURE.md`](COMPUTATIONAL_RAW_ARCHITECTURE.md).

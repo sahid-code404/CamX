@@ -33,8 +33,9 @@ unconditional dependency on a post-23, private, or vendor platform library. CI c
 shared object’s ABI, Android build note, dependencies, strong undefined symbols with versions, and
 approved exports against the API-23 public NDK surface.
 
-Kotlin/Java Camera2 remains the only device/session control plane. CAMX-100A ships no optional native
-backend or dynamic loader. Future public-native capabilities have these independent floors:
+Kotlin/Java Camera2 remains the only device/session control plane. The accepted API-23 foundation
+ships no optional native backend or dynamic loader. Future public-native capabilities have these
+independent floors:
 
 | Capability | Public library | Minimum API |
 |---|---|---:|
@@ -95,8 +96,9 @@ establish camera-route, lens, FPS, RAW, lifecycle, thermal, or leak behavior.
   generation assumptions.
 - Cleanup is slightly more explicit because invalidation, detached close, and completion publication
   are separate phases; this is required to prevent callback re-entry and stale completion races.
-- CAMX-100A adds no Camera2 open/configure feature implementation, optional native backend, RAW
-  behavior, device quirk, OTA network client, or physical-hardware support claim.
+- The accepted API-23/asynchronous-ownership foundation added no Camera2 open/configure feature,
+  optional native backend, RAW behavior, device quirk, OTA network client, or physical-hardware
+  support claim.
 
 ## Rejected alternatives
 

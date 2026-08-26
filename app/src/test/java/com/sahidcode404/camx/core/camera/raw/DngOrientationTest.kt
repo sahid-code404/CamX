@@ -16,4 +16,17 @@ class DngOrientationTest {
     fun frontOrientationUsesFacingSpecificMath() {
         assertEquals(3, DngOrientation.tiffOrientation(90, LensFacing.FRONT, DisplayRotation.ROTATION_90))
     }
+
+    @Test
+    fun rearAndFrontCoverAllShutterRotationsWithoutPixelRotation() {
+        val rotations = DisplayRotation.entries
+        assertEquals(
+            listOf(6, 1, 8, 3),
+            rotations.map { DngOrientation.tiffOrientation(90, LensFacing.BACK, it) },
+        )
+        assertEquals(
+            listOf(6, 3, 8, 1),
+            rotations.map { DngOrientation.tiffOrientation(90, LensFacing.FRONT, it) },
+        )
+    }
 }

@@ -126,10 +126,20 @@ class CameraModelsTest {
         canonicalLensFingerprint = CanonicalLensFingerprint("lens:raw"),
         cameraProfileFingerprint = CameraProfileFingerprint("profile:raw"),
         routeId = CameraRouteId("route:raw"),
+        openCameraId = CameraTransportId("opaque-open"),
+        physicalCameraId = PhysicalCameraId("opaque-physical"),
+        previewSurfaceIdentity = 1L,
         displayRotationAtShutter = DisplayRotation.ROTATION_0,
         sensorOrientationDegrees = sensorOrientationDegrees,
         lensFacing = LensFacing.BACK,
-        rawSize = IntSize(4000, 3000),
+        rawRepresentation = SensorRawRepresentation(
+            format = SensorRawFormat.RAW_SENSOR,
+            size = IntSize(4000, 3000),
+            dngWritable = true,
+        ),
+        sensorTimestampBasis = SensorTimestampBasis.REALTIME,
+        admittedAtElapsedRealtimeNs = 1L,
+        deadlineElapsedRealtimeNs = 2_000_000_001L,
         timeoutMillis = timeoutMillis,
     )
 }

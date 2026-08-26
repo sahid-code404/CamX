@@ -62,6 +62,21 @@ class RawTimestampPairerTest {
         }
     }
 
+    @Test
+    fun duplicateTimestampClosesReplacedImageExactlyOnce() {
+        val pairer = RawTimestampPairer<FakeImage, String>(2)
+        val first = FakeImage()
+        val replacement = FakeImage()
+
+        pairer.offerImage(10L, first)
+        pairer.offerImage(10L, replacement)
+        checkNotNull(pairer.offerResult(10L, "latest")).close()
+        pairer.close()
+
+        assertTrue(first.closed)
+        assertTrue(replacement.closed)
+    }
+
     private class FakeImage : AutoCloseable {
         var closed = false
         override fun close() { check(!closed); closed = true }

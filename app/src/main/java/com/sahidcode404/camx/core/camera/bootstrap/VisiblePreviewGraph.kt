@@ -39,6 +39,7 @@ import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceLease
 import com.sahidcode404.camx.core.camera.session.CameraEngineState
 import com.sahidcode404.camx.core.camera.session.CameraSessionController
+import com.sahidcode404.camx.core.camera.session.captureRaw
 import com.sahidcode404.camx.core.camera.topology.AdvertisedTopologyEvidenceProvider
 import com.sahidcode404.camx.core.camera.topology.CameraTopologyRepository
 import com.sahidcode404.camx.core.camera.topology.JavaDeepCertificationSource
@@ -69,7 +70,7 @@ class VisiblePreviewGraph(context: Context) : AutoCloseable {
     private val appContext = context.applicationContext
     private val cameraManager = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val environment = runtimeEnvironmentFingerprint()
-    private val controller = CameraSessionController(cameraManager)
+    private val controller = CameraSessionController(appContext, cameraManager)
     private val seedDiscovery = AndroidFirstInstallSeedDiscovery(
         cameraManager = cameraManager,
         environment = environment,
@@ -443,6 +444,7 @@ private class AndroidVisiblePreviewSessionPort(
     private val controller: CameraSessionController,
 ) : VisiblePreviewSessionPort {
     override val state: StateFlow<CameraEngineState> = controller.state
+    override val rawCaptureState = controller.rawCaptureState
 
     override suspend fun startPreview(
         selection: ActiveCameraSelection,
@@ -466,6 +468,9 @@ private class AndroidVisiblePreviewSessionPort(
     override suspend fun surfaceInvalidated(identity: PreviewSurfaceIdentity) {
         controller.surfaceInvalidated(identity)
     }
+
+    override suspend fun captureRaw(input: com.sahidcode404.camx.core.camera.raw.RawShutterInput) =
+        controller.captureRaw(input)
 
     override suspend fun pause() {
         controller.pause()

@@ -23,6 +23,9 @@ import com.sahidcode404.camx.core.camera.model.PreviewTrust
 import com.sahidcode404.camx.core.camera.preview.PreviewPolicyResult
 import com.sahidcode404.camx.core.camera.preview.PreviewStreamSelectionReason
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
+import com.sahidcode404.camx.core.camera.raw.RawAdmissionDecision
+import com.sahidcode404.camx.core.camera.raw.RawAdmissionRejection
+import com.sahidcode404.camx.core.camera.raw.RawShutterInput
 import com.sahidcode404.camx.core.camera.session.CameraEngineState
 import com.sahidcode404.camx.core.settings.SettingsSnapshot
 import kotlinx.coroutines.CompletableDeferred
@@ -147,6 +150,29 @@ class VisiblePreviewCoordinatorTest {
         assertEquals(1, fixture.session.startCalls)
         val state = fixture.coordinator.uiState.value as VisiblePreviewUiState.Previewing
         assertTrue(state.firstFrameVerified)
+    }
+
+    @Test
+    fun shutterForwardsOnlyVerifiedShutterTimeRotationAndExactSelectionMetadata() {
+        val fixture = fixture()
+        start(fixture)
+        fixture.session.projectPreview(firstFrameVerified = false)
+
+        fixture.coordinator.captureRaw(DisplayRotation.ROTATION_90)
+        assertTrue(fixture.session.rawInputs.isEmpty())
+
+        fixture.session.projectPreview(firstFrameVerified = true)
+        fixture.coordinator.captureRaw(DisplayRotation.ROTATION_270)
+
+        assertEquals(
+            RawShutterInput(
+                displayRotation = DisplayRotation.ROTATION_270,
+                sensorOrientationDegrees = 90,
+                lensFacing = LensFacing.BACK,
+                lifecycleActive = true,
+            ),
+            fixture.session.rawInputs.single(),
+        )
     }
 
     @Test
@@ -351,6 +377,7 @@ class VisiblePreviewCoordinatorTest {
         var pauseCalls = 0
         var shutdownCalls = 0
         val invalidated = mutableListOf<PreviewSurfaceIdentity>()
+        val rawInputs = mutableListOf<RawShutterInput>()
         var lastSelection: ActiveCameraSelection? = null
         var activeLease: VisiblePreviewLease? = null
 
@@ -371,6 +398,11 @@ class VisiblePreviewCoordinatorTest {
             invalidated += identity
             activeLease?.close()
             activeLease = null
+        }
+
+        override suspend fun captureRaw(input: RawShutterInput): RawAdmissionDecision {
+            rawInputs += input
+            return RawAdmissionDecision.Rejected(RawAdmissionRejection.SENSOR_RAW_UNSUPPORTED)
         }
 
         override suspend fun pause() {
@@ -442,12 +474,12 @@ class VisiblePreviewCoordinatorTest {
         )
 
         private fun awaitUnit(block: suspend () -> Unit) {
-            var result: Result<Unit>? = null
+            var outcome: Result<Unit>? = null
             block.startCoroutine(object : kotlin.coroutines.Continuation<Unit> {
                 override val context = kotlin.coroutines.EmptyCoroutineContext
-                override fun resumeWith(value: Result<Unit>) { result = value }
+                override fun resumeWith(result: Result<Unit>) { outcome = result }
             })
-            checkNotNull(result).getOrThrow()
+            checkNotNull(outcome).getOrThrow()
         }
     }
 }

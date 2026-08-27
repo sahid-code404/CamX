@@ -1,5 +1,6 @@
 package com.sahidcode404.camx.core.camera.bootstrap
 
+import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.view.SurfaceHolder
@@ -14,6 +15,7 @@ import java.util.Collections
 
 internal const val VISIBLE_PREVIEW_MAX_STREAMS = 128
 internal const val VISIBLE_PREVIEW_MAX_FPS_RANGES = 64
+internal const val VISIBLE_PREVIEW_MAX_RAW_SIZES = 128
 
 enum class SelectedSeedCapabilityFailure {
     CHARACTERISTICS_UNAVAILABLE,
@@ -49,7 +51,9 @@ class AndroidSelectedSeedPreviewCapabilityReader(
 ) : SelectedSeedPreviewCapabilitySource {
     override fun read(route: CameraRoute): SelectedSeedCapabilityResult {
         val characteristics = try {
-            cameraManager.getCameraCharacteristics(route.openCameraId.value)
+            cameraManager.getCameraCharacteristics(
+                route.physicalCameraId?.value ?: route.openCameraId.value,
+            )
         } catch (_: Exception) {
             return SelectedSeedCapabilityResult.Unavailable(
                 SelectedSeedCapabilityFailure.CHARACTERISTICS_UNAVAILABLE,
@@ -121,6 +125,30 @@ class AndroidSelectedSeedPreviewCapabilityReader(
             .sortedWith(compareBy(CameraFpsCapability::minimum, CameraFpsCapability::maximum))
             .toList()
 
+        val rawAdvertised = characteristics
+            .get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
+            ?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) == true
+        val rawSizes = if (rawAdvertised) {
+            val reported = try {
+                streamMap.getOutputSizes(ImageFormat.RAW_SENSOR)
+            } catch (_: Exception) {
+                null
+            }.orEmpty()
+            if (reported.size > VISIBLE_PREVIEW_MAX_RAW_SIZES) {
+                return SelectedSeedCapabilityResult.Unavailable(
+                    SelectedSeedCapabilityFailure.INVALID_METADATA,
+                )
+            }
+            reported.asSequence()
+                .filter { it.width > 0 && it.height > 0 }
+                .map { IntSize(it.width, it.height) }
+                .distinct()
+                .sortedWith(compareBy({ it.area }, { it.width }, { it.height }))
+                .toList()
+        } else {
+            emptyList()
+        }
+
         val facing = when (characteristics.get(CameraCharacteristics.LENS_FACING)) {
             CameraCharacteristics.LENS_FACING_BACK -> LensFacing.BACK
             CameraCharacteristics.LENS_FACING_FRONT -> LensFacing.FRONT
@@ -132,6 +160,7 @@ class AndroidSelectedSeedPreviewCapabilityReader(
                 capabilities = CameraCapabilities(
                     previewStreams = immutableList(streams),
                     fpsRanges = immutableList(fpsRanges),
+                    rawSizes = immutableList(rawSizes),
                 ),
                 sensorOrientationDegrees = sensorOrientation,
                 lensFacing = facing,

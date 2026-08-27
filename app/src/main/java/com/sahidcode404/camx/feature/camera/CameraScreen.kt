@@ -40,6 +40,7 @@ import com.sahidcode404.camx.core.camera.lens.LensTestStatus
 import com.sahidcode404.camx.core.camera.model.CanonicalLensFingerprint
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceBinding
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
+import com.sahidcode404.camx.core.camera.raw.RawCaptureUiState
 import com.sahidcode404.camx.ui.components.StableSurfaceView
 import com.sahidcode404.camx.ui.design.CamXColors
 
@@ -50,9 +51,11 @@ fun CameraScreen(
     uiState: VisiblePreviewUiState,
     renderSpec: VisiblePreviewRenderSpec?,
     lensItems: List<CameraLensUiItem>,
+    rawCaptureState: RawCaptureUiState,
     auxAudit: AuxHardwareAuditSnapshot = AuxHardwareAuditSnapshot(),
     inventoryStatus: LensInventoryStatus? = null,
     onLensSelected: (CanonicalLensFingerprint) -> Unit,
+    onCapture: () -> Unit,
     onDeepRescan: () -> Unit = {},
     onResetDiscoveryCache: () -> Unit = {},
     onSurfaceAvailable: (PreviewSurfaceBinding) -> Unit,
@@ -60,7 +63,13 @@ fun CameraScreen(
     onOpenAppSettings: () -> Unit,
 ) {
     val previewContentDescription = stringResource(R.string.camera_preview_content_description)
-    val captureContentDescription = stringResource(R.string.capture_unavailable_content_description)
+    val captureContentDescription = when (rawCaptureState) {
+        RawCaptureUiState.Unavailable -> stringResource(R.string.capture_unavailable_content_description)
+        RawCaptureUiState.Ready -> stringResource(R.string.capture_sensor_raw_content_description)
+        is RawCaptureUiState.Capturing -> stringResource(R.string.capture_sensor_raw_capturing_content_description)
+        is RawCaptureUiState.Saving -> stringResource(R.string.capture_sensor_raw_saving_content_description)
+        is RawCaptureUiState.Recovering -> stringResource(R.string.capture_sensor_raw_recovering_content_description)
+    }
     val revealPreviewSurface = shouldRevealPreviewSurface(uiState, renderSpec)
     var showAuxAudit by remember { mutableStateOf(false) }
     Box(
@@ -144,12 +153,12 @@ fun CameraScreen(
                 .padding(bottom = 44.dp)
                 .size(72.dp)
                 .semantics { contentDescription = captureContentDescription },
-            enabled = false,
+            enabled = rawCaptureState == RawCaptureUiState.Ready,
             shape = CircleShape,
             colors = ButtonDefaults.buttonColors(
                 disabledContainerColor = Color.White.copy(alpha = 0.55f),
             ),
-            onClick = {},
+            onClick = onCapture,
         ) {
             Box(modifier = Modifier.size(1.dp))
         }

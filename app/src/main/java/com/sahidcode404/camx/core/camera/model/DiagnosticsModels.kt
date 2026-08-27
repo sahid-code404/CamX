@@ -46,4 +46,7 @@ data class CameraResourceSnapshot(
     val cameraWorkers: Int = 0,
     val nativeQueueDepth: Int = 0,
     val jniGlobalReferences: Int = 0,
+    val activeRawTransactions: Int = 0,
+    val pendingRawImages: Int = 0,
+    val pendingRawResults: Int = 0,
 )

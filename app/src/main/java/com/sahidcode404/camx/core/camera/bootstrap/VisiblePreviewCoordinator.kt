@@ -25,6 +25,10 @@ import com.sahidcode404.camx.core.camera.preview.PreviewPolicyInput
 import com.sahidcode404.camx.core.camera.preview.PreviewPolicyResult
 import com.sahidcode404.camx.core.camera.preview.PreviewStreamPolicy
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
+import com.sahidcode404.camx.core.camera.raw.RawAdmissionDecision
+import com.sahidcode404.camx.core.camera.raw.RawAdmissionRejection
+import com.sahidcode404.camx.core.camera.raw.RawCaptureUiState
+import com.sahidcode404.camx.core.camera.raw.RawShutterInput
 import com.sahidcode404.camx.core.camera.session.CameraEngineState
 import com.sahidcode404.camx.core.settings.SettingsSnapshot
 import java.nio.charset.StandardCharsets
@@ -95,6 +99,8 @@ internal interface VisiblePreviewSurfacePort {
 
 internal interface VisiblePreviewSessionPort {
     val state: StateFlow<CameraEngineState>
+    val rawCaptureState: StateFlow<RawCaptureUiState>
+        get() = EMPTY_RAW_CAPTURE_STATE
 
     suspend fun startPreview(
         selection: ActiveCameraSelection,
@@ -105,9 +111,14 @@ internal interface VisiblePreviewSessionPort {
     )
 
     suspend fun surfaceInvalidated(identity: PreviewSurfaceIdentity)
+    suspend fun captureRaw(input: RawShutterInput): RawAdmissionDecision =
+        RawAdmissionDecision.Rejected(RawAdmissionRejection.SENSOR_RAW_UNSUPPORTED)
     suspend fun pause()
     suspend fun shutdown()
 }
+
+private val EMPTY_RAW_CAPTURE_STATE: StateFlow<RawCaptureUiState> =
+    MutableStateFlow<RawCaptureUiState>(RawCaptureUiState.Unavailable).asStateFlow()
 
 /**
  * Low-frequency production startup/switch coordinator. Camera2 resources remain owned exclusively by
@@ -148,10 +159,12 @@ class VisiblePreviewCoordinator internal constructor(
     private var preferredLens: CanonicalLensFingerprint? = null
     private var switchTransaction: LensSwitchTransaction? = null
     private var pendingPresentationTarget: PresentationTargetIdentity? = null
+    private var captureMetadata: CaptureMetadata? = null
 
     val uiState: StateFlow<VisiblePreviewUiState> = mutableUiState.asStateFlow()
     val renderSpec: StateFlow<VisiblePreviewRenderSpec?> = mutableRenderSpec.asStateFlow()
     val lensItems: StateFlow<List<CameraLensUiItem>> = mutableLensItems.asStateFlow()
+    val rawCaptureState: StateFlow<RawCaptureUiState> = session.rawCaptureState
 
     init {
         scope.launch {
@@ -293,6 +306,23 @@ class VisiblePreviewCoordinator internal constructor(
             }
             mutableLensItems.value = currentLensProjection().items
             scheduleTopologyStartup(target, releaseCurrentPreview = true)
+        }
+    }
+
+    fun captureRaw(rotationAtShutter: DisplayRotation) {
+        if (shutdownRequested.get()) return
+        scope.launch {
+            val preview = session.state.value as? CameraEngineState.Previewing ?: return@launch
+            if (!preview.firstFrameVerified || !permissionGranted || !resumed) return@launch
+            val metadata = captureMetadata?.takeIf { it.matches(preview.selection) } ?: return@launch
+            session.captureRaw(
+                RawShutterInput(
+                    displayRotation = rotationAtShutter,
+                    sensorOrientationDegrees = metadata.sensorOrientationDegrees,
+                    lensFacing = metadata.lensFacing,
+                    lifecycleActive = true,
+                ),
+            )
         }
     }
 
@@ -487,6 +517,12 @@ class VisiblePreviewCoordinator internal constructor(
             surfacePort.awaitBufferSize(lease.identity, supported.configuration.size)
             if (!isCurrentTarget(generation, target.canonicalLens)) return
             try {
+                captureMetadata = CaptureMetadata(
+                    routeId = target.selection.routeId,
+                    profileFingerprint = target.selection.profileFingerprint,
+                    sensorOrientationDegrees = target.capabilities.sensorOrientationDegrees,
+                    lensFacing = target.capabilities.lensFacing,
+                )
                 session.startPreview(
                     selection = target.selection,
                     route = target.route,
@@ -757,6 +793,11 @@ class VisiblePreviewCoordinator internal constructor(
         is CameraEngineState.ConfiguringPreview -> state.selection
         is CameraEngineState.Previewing -> state.selection
         is CameraEngineState.Switching -> state.to
+        is CameraEngineState.ConfiguringRaw -> state.selection
+        is CameraEngineState.CapturingRaw -> state.selection
+        is CameraEngineState.PairingRaw -> state.selection
+        is CameraEngineState.WritingDng -> state.selection
+        is CameraEngineState.RestoringPreview -> state.selection
         is CameraEngineState.Pausing -> state.selection
         is CameraEngineState.RecoverableError -> state.selection
         is CameraEngineState.StructuralError -> state.selection
@@ -871,6 +912,16 @@ class VisiblePreviewCoordinator internal constructor(
         val canonicalLens: CanonicalLensFingerprint?,
     )
 
+    private data class CaptureMetadata(
+        val routeId: CameraRouteId,
+        val profileFingerprint: CameraProfileFingerprint,
+        val sensorOrientationDegrees: Int,
+        val lensFacing: com.sahidcode404.camx.core.camera.model.LensFacing,
+    ) {
+        fun matches(selection: ActiveCameraSelection): Boolean =
+            routeId == selection.routeId && profileFingerprint == selection.profileFingerprint
+    }
+
     private companion object {
         fun bootstrapSelection(
             route: CameraRoute,
@@ -891,6 +942,9 @@ class VisiblePreviewCoordinator internal constructor(
                 capabilities.capabilities.fpsRanges
                     .sortedWith(compareBy({ it.minimum }, { it.maximum }))
                     .forEach { append(";fps=").append(it.minimum).append('-').append(it.maximum) }
+                capabilities.capabilities.rawSizes
+                    .sortedWith(compareBy({ it.width }, { it.height }))
+                    .forEach { append(";raw_sensor=").append(it.width).append('x').append(it.height) }
             }
             val routeKey = digestHex("bootstrap-canonical|${route.id.value}", 16)
             val profileKey = digestHex("bootstrap-profile|$evidenceKey", 16)

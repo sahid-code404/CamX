@@ -77,6 +77,25 @@ class RawTimestampPairerTest {
         assertTrue(replacement.closed)
     }
 
+    @Test
+    fun duplicateResultTimestampUsesLatestExactResultAndInvalidTimestampsNeverPair() {
+        val pairer = RawTimestampPairer<FakeImage, String>(2)
+        val invalid = FakeImage()
+        val exact = FakeImage()
+
+        assertNull(pairer.offerImage(-1L, invalid))
+        assertNull(pairer.offerResult(0L, "zero"))
+        assertNull(pairer.offerResult(-1L, "negative"))
+        assertNull(pairer.offerResult(41L, "first"))
+        assertNull(pairer.offerResult(41L, "latest"))
+        val pair = checkNotNull(pairer.offerImage(41L, exact))
+
+        assertEquals("latest", pair.result)
+        assertTrue(invalid.closed)
+        pair.close()
+        assertTrue(exact.closed)
+    }
+
     private class FakeImage : AutoCloseable {
         var closed = false
         override fun close() { check(!closed); closed = true }

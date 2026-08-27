@@ -5,6 +5,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
@@ -61,7 +62,7 @@ class CameraStateMutationGateTest {
                 }
             }
             assertTrue(firstEntered.await(5, TimeUnit.SECONDS))
-            val stale = launch(Dispatchers.Default) {
+            val stale = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
                 gate.mutate { staleRan = true }
             }
             stale.cancelAndJoin()

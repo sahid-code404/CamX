@@ -4,8 +4,10 @@
 
 Test value validation, topology permutation determinism and conservative separation, state transition
 legality, typed failure policy, selection/session/capture generation rejection, FPS resolution,
-geometry, bounded actual-FPS metrics, trace overflow, RAW pairing/closure, DNG orientation,
-MediaStore rollback, cache codecs, settings memory-first behavior, and OTA rejection matrices.
+geometry, bounded actual-FPS metrics, trace overflow, RAW admission and exact timestamp pairing in
+both callback orders, duplicate/invalid/overflow/timeout closure, DNG orientation, MediaStore
+reopen/validation/publication rollback, cache codecs, settings memory-first behavior, and OTA
+rejection matrices.
 
 The accepted API-23/asynchronous-ownership foundation additionally tests that requested-configuration rejection is nonstructural and enables only
 one `REQUESTED -> SAFE_BASELINE` attempt, while safe-baseline rejection alone changes preview trust and
@@ -37,8 +39,9 @@ schema, runtime API, compiled API 23, pointer width, and counter count. A modern
 the same baseline remains loadable while optional native capabilities remain typed `Unsupported`
 unless actually implemented and probed.
 
-Future Camera2 instrumentation also permutes same-route stale opens, surface replacement, latest-wins
-switching, pause, cancellation, RAW restore, and MediaStore failures. Compose tests verify
+Controlled real-controller JVM tests cover token-bound RAW session replacement, latest-wins switching,
+pause/shutdown/surface invalidation, cancellation, RAW restore, and storage-domain isolation. Future
+Camera2 instrumentation repeats those cases against Android Camera2 and MediaStore. Compose tests verify
 permission/error actions, accessibility, and stable AndroidView identity. Macrobenchmark/profile
 builds measure startup and switching but never replace debug OTA or API-floor smoke evidence.
 

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -52,19 +53,25 @@ class MainActivity : ComponentActivity() {
                 val uiState by visiblePreviewGraph.coordinator.uiState.collectAsState()
                 val renderSpec by visiblePreviewGraph.coordinator.renderSpec.collectAsState()
                 val lensItems by visiblePreviewGraph.coordinator.lensItems.collectAsState()
+                val rawCaptureState by visiblePreviewGraph.coordinator.rawCaptureState.collectAsState()
                 val auxAudit by visiblePreviewGraph.auxAudit.collectAsState()
                 val lensInventoryStatus by visiblePreviewGraph.lensInventoryStatus.collectAsState()
                 val updateState by updateViewModel.state.collectAsState()
                 val permissionLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestPermission(),
-                ) { granted ->
+                    ActivityResultContracts.RequestMultiplePermissions(),
+                ) { grants ->
+                    val granted = grants[Manifest.permission.CAMERA] == true || hasCameraPermission()
                     cameraPermissionGranted = granted
                     requestCompleted = true
                     visiblePreviewGraph.coordinator.setPermission(granted)
                 }
 
                 LaunchedEffect(Unit) {
-                    if (!cameraPermissionGranted) permissionLauncher.launch(Manifest.permission.CAMERA)
+                    val missing = requiredPermissions().filter { permission ->
+                        ContextCompat.checkSelfPermission(this@MainActivity, permission) !=
+                            PackageManager.PERMISSION_GRANTED
+                    }
+                    if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
                 }
                 LaunchedEffect(uiState) {
                     val preview = uiState as? VisiblePreviewUiState.Previewing
@@ -80,9 +87,13 @@ class MainActivity : ComponentActivity() {
                         uiState = uiState,
                         renderSpec = renderSpec,
                         lensItems = lensItems,
+                        rawCaptureState = rawCaptureState,
                         auxAudit = auxAudit,
                         inventoryStatus = lensInventoryStatus,
                         onLensSelected = visiblePreviewGraph.coordinator::selectLens,
+                        onCapture = {
+                            visiblePreviewGraph.coordinator.captureRaw(currentDisplayRotation())
+                        },
                         onDeepRescan = { visiblePreviewGraph.requestDeepRescan() },
                         onResetDiscoveryCache = visiblePreviewGraph::resetDiscoveryCache,
                         onSurfaceAvailable = visiblePreviewGraph::publishSurface,
@@ -143,4 +154,10 @@ class MainActivity : ComponentActivity() {
         this,
         Manifest.permission.CAMERA,
     ) == PackageManager.PERMISSION_GRANTED
+
+    private fun requiredPermissions(): Array<String> = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+        arrayOf(Manifest.permission.CAMERA, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+    } else {
+        arrayOf(Manifest.permission.CAMERA)
+    }
 }

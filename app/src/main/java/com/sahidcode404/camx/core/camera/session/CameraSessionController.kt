@@ -1,20 +1,12 @@
 package com.sahidcode404.camx.core.camera.session
 
-import android.annotation.SuppressLint
-import android.annotation.TargetApi
+import android.content.Context
 import android.hardware.camera2.CameraAccessException
-import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
-import android.hardware.camera2.CaptureRequest
-import android.hardware.camera2.TotalCaptureResult
-import android.hardware.camera2.params.OutputConfiguration
-import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
-import android.util.Range
-import android.view.Surface
 import com.sahidcode404.camx.core.camera.diagnostics.CameraDeviceError
 import com.sahidcode404.camx.core.camera.diagnostics.CameraDisabled
 import com.sahidcode404.camx.core.camera.diagnostics.CameraDisconnected
@@ -22,17 +14,28 @@ import com.sahidcode404.camx.core.camera.diagnostics.CameraFailure
 import com.sahidcode404.camx.core.camera.diagnostics.CameraInUse
 import com.sahidcode404.camx.core.camera.diagnostics.MaximumCamerasInUse
 import com.sahidcode404.camx.core.camera.diagnostics.PermissionDenied
+import com.sahidcode404.camx.core.camera.diagnostics.RawUnsupported
 import com.sahidcode404.camx.core.camera.diagnostics.RequestedConfigurationKind
 import com.sahidcode404.camx.core.camera.diagnostics.RequestedConfigurationRejected
 import com.sahidcode404.camx.core.camera.diagnostics.SafeBaselineConfigurationRejected
 import com.sahidcode404.camx.core.camera.model.ActiveCameraSelection
 import com.sahidcode404.camx.core.camera.model.CameraResourceSnapshot
 import com.sahidcode404.camx.core.camera.model.CameraRoute
+import com.sahidcode404.camx.core.camera.model.CameraProfileFingerprint
 import com.sahidcode404.camx.core.camera.model.CameraStartupMilestone
-import com.sahidcode404.camx.core.camera.model.CameraTransportId
-import com.sahidcode404.camx.core.camera.model.PhysicalCameraId
+import com.sahidcode404.camx.core.camera.model.CaptureToken
 import com.sahidcode404.camx.core.camera.model.PreviewConfiguration
 import com.sahidcode404.camx.core.camera.model.PreviewConfigurationAttemptKind
+import com.sahidcode404.camx.core.camera.model.RawCaptureContext
+import com.sahidcode404.camx.core.camera.model.RawContractLimits
+import com.sahidcode404.camx.core.camera.raw.AndroidSensorDngWriter
+import com.sahidcode404.camx.core.camera.raw.OneShotRawAcquisition
+import com.sahidcode404.camx.core.camera.raw.RawCaptureOutcome
+import com.sahidcode404.camx.core.camera.raw.RawCaptureUiState
+import com.sahidcode404.camx.core.camera.raw.RawPublicationPermit
+import com.sahidcode404.camx.core.camera.raw.SensorDngWriter
+import com.sahidcode404.camx.core.camera.raw.SensorRawCaptureResult
+import com.sahidcode404.camx.core.camera.raw.SensorRawImage
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceIdentity
 import com.sahidcode404.camx.core.camera.preview.PreviewSurfaceLease
 import com.sahidcode404.camx.core.camera.runtime.CameraGenerationGate
@@ -45,6 +48,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
@@ -56,32 +60,46 @@ import kotlinx.coroutines.withContext
 
 /** Sole Camera2 device/session/repeating-preview owner. */
 class CameraSessionController private constructor(
-    private val runtime: ControllerRuntime,
-    private val elapsedRealtimeNs: () -> Long,
+    internal val runtime: ControllerRuntime,
+    internal val elapsedRealtimeNs: () -> Long,
+    internal val rawTimeoutMillis: Long,
 ) {
     private val callbackDispatcher: CoroutineDispatcher = runtime.dispatcher
     private val mutationGate = CameraStateMutationGate(callbackDispatcher)
     private val asyncOwnership = CameraAsyncOwnership()
-    private val generations = CameraGenerationGate()
-    private val callbackScope = CoroutineScope(SupervisorJob() + callbackDispatcher)
-    private val shutdownRequested = AtomicBoolean(false)
+    internal val rawMutationGate: CameraStateMutationGate get() = mutationGate
+    internal val rawAsyncOwnership: CameraAsyncOwnership get() = asyncOwnership
+    internal val generations = CameraGenerationGate()
+    internal val callbackScope = CoroutineScope(SupervisorJob() + callbackDispatcher)
+    internal val shutdownRequested = AtomicBoolean(false)
     private val shutdownComplete = CompletableDeferred<Unit>()
     private val trace = BoundedCameraStartupTrace()
-    private val mutableState = MutableStateFlow<CameraEngineState>(
+    internal val mutableState = MutableStateFlow<CameraEngineState>(
         CameraEngineState.WaitingForSurface(selection = null),
     )
-    private val mutableResources = MutableStateFlow(
+    internal val mutableResources = MutableStateFlow(
         CameraResourceSnapshot(cameraWorkers = runtime.workerCount),
     )
+    internal val mutableRawCaptureState = MutableStateFlow<RawCaptureUiState>(RawCaptureUiState.Unavailable)
+    internal val mutableLastRawOutcome = MutableStateFlow<RawCaptureOutcome?>(null)
 
-    private var activeSurface: ActiveSurface? = null
-    private var activeDevice: ActiveDevice? = null
-    private var activeSession: ActiveSession? = null
-    private var currentPreview: PreviewIntent? = null
+    internal var activeSurface: ActiveSurface? = null
+    internal var activeDevice: ActiveDevice? = null
+    internal var activeSession: ActiveSession? = null
+    internal var currentPreview: PreviewIntent? = null
+    internal var activeRaw: ActiveRawTransaction? = null
+    internal val structurallyRejectedRawProfiles = LinkedHashSet<CameraProfileFingerprint>()
 
     constructor(cameraManager: CameraManager) : this(
-        runtime = createAndroidRuntime(cameraManager),
+        runtime = createAndroidRuntime(cameraManager, unavailableDngWriter()),
         elapsedRealtimeNs = SystemClock::elapsedRealtimeNanos,
+        rawTimeoutMillis = RawContractLimits.DEFAULT_TIMEOUT_MILLIS,
+    )
+
+    constructor(context: Context, cameraManager: CameraManager) : this(
+        runtime = createAndroidRuntime(cameraManager, AndroidSensorDngWriter(context)),
+        elapsedRealtimeNs = SystemClock::elapsedRealtimeNanos,
+        rawTimeoutMillis = RawContractLimits.DEFAULT_TIMEOUT_MILLIS,
     )
 
     internal constructor(
@@ -90,13 +108,24 @@ class CameraSessionController private constructor(
         elapsedRealtimeNs: () -> Long = { 0L },
         shutdownWorker: suspend () -> Unit = {},
         workerCount: Int = 1,
+        sensorDngWriter: SensorDngWriter = unavailableDngWriter(),
+        rawTimeoutMillis: Long = RawContractLimits.DEFAULT_TIMEOUT_MILLIS,
     ) : this(
-        ControllerRuntime(platform, dispatcher, shutdownWorker, workerCount),
+        ControllerRuntime(platform, sensorDngWriter, dispatcher, shutdownWorker, workerCount),
         elapsedRealtimeNs,
+        rawTimeoutMillis,
     )
+
+    init {
+        require(rawTimeoutMillis in RawContractLimits.MINIMUM_TIMEOUT_MILLIS..
+            RawContractLimits.MAXIMUM_TIMEOUT_MILLIS
+        ) { "RAW timeout is outside the shared contract" }
+    }
 
     val state: StateFlow<CameraEngineState> = mutableState.asStateFlow()
     val resources: StateFlow<CameraResourceSnapshot> = mutableResources.asStateFlow()
+    val rawCaptureState: StateFlow<RawCaptureUiState> = mutableRawCaptureState.asStateFlow()
+    val lastRawOutcome: StateFlow<RawCaptureOutcome?> = mutableLastRawOutcome.asStateFlow()
 
     fun traceSnapshot() = trace.snapshot()
 
@@ -473,6 +502,7 @@ class CameraSessionController private constructor(
             val preview = currentPreview ?: return@mutate
             if (preview.identity() != command.preview.identity()) return@mutate
             transition(CameraEngineState.Previewing(preview.selection, firstFrameVerified = false))
+            refreshRawAvailabilityLocked()
         }
     }
 
@@ -484,6 +514,7 @@ class CameraSessionController private constructor(
             mark(CameraStartupMilestone.FIRST_CAPTURE_RESULT, previewing.selection)
             mark(CameraStartupMilestone.FIRST_PREVIEW_FRAME, previewing.selection)
             transition(previewing.copy(firstFrameVerified = true))
+            refreshRawAvailabilityLocked()
         }
     }
 
@@ -617,7 +648,7 @@ class CameraSessionController private constructor(
         closePlan(cleanup)
     }
 
-    private fun failCurrentLocked(preview: PreviewIntent, failure: CameraFailure): CameraCleanupPlan? {
+    internal fun failCurrentLocked(preview: PreviewIntent, failure: CameraFailure): CameraCleanupPlan? {
         val next = generations.advanceSession()
         val failed = preview.selection.copy(sessionGeneration = next.session)
         asyncOwnership.invalidatePending()
@@ -639,25 +670,47 @@ class CameraSessionController private constructor(
     }
 
     private fun detachAllLocked(): CameraCleanupPlan? {
-        val cleanups = ArrayList<CameraResourceCleanup>(3)
+        val cleanups = ArrayList<CameraResourceCleanup>(7)
         activeSession?.let { cleanups += it.cleanup }
+        activeRaw?.let { raw ->
+            raw.publicationPermit.revoke()
+            raw.waitJob?.let { job -> cleanups += CameraResourceCleanup(job::cancel) }
+            raw.deadlineJob?.let { job -> cleanups += CameraResourceCleanup(job::cancel) }
+            raw.readerCleanup?.let(cleanups::add)
+            cleanups += CameraResourceCleanup(raw.acquisition::close)
+        }
         activeDevice?.let { cleanups += it.cleanup }
         activeSurface?.let { cleanups += it.cleanup }
         activeSession = null
+        activeRaw = null
         activeDevice = null
         activeSurface = null
+        mutableRawCaptureState.value = RawCaptureUiState.Unavailable
         updateResourcesLocked()
         return if (cleanups.isEmpty()) null else CameraCleanupPlan(cleanups)
     }
 
-    private fun detachSessionLocked(): CameraCleanupPlan? {
+    internal fun detachRawLocked(): CameraCleanupPlan? {
+        val raw = activeRaw ?: return null
+        raw.publicationPermit.revoke()
+        activeRaw = null
+        val cleanups = ArrayList<CameraResourceCleanup>(4)
+        raw.waitJob?.let { job -> cleanups += CameraResourceCleanup(job::cancel) }
+        raw.deadlineJob?.let { job -> cleanups += CameraResourceCleanup(job::cancel) }
+        raw.readerCleanup?.let(cleanups::add)
+        cleanups += CameraResourceCleanup(raw.acquisition::close)
+        updateResourcesLocked()
+        return CameraCleanupPlan(cleanups)
+    }
+
+    internal fun detachSessionLocked(): CameraCleanupPlan? {
         val session = activeSession ?: return null
         activeSession = null
         updateResourcesLocked()
         return CameraCleanupPlan(listOf(session.cleanup))
     }
 
-    private fun combineCleanup(first: CameraCleanupPlan?, second: CameraCleanupPlan?): CameraCleanupPlan? = when {
+    internal fun combineCleanup(first: CameraCleanupPlan?, second: CameraCleanupPlan?): CameraCleanupPlan? = when {
         first == null -> second
         second == null -> first
         else -> CameraCleanupPlan(
@@ -668,16 +721,22 @@ class CameraSessionController private constructor(
         )
     }
 
-    private fun updateResourcesLocked() {
+    internal fun updateResourcesLocked() {
+        val raw = activeRaw
         mutableResources.value = CameraResourceSnapshot(
             cameraDevices = if (activeDevice == null) 0 else 1,
             captureSessions = if (activeSession == null) 0 else 1,
             ownedSurfaces = if (activeSurface == null) 0 else 1,
+            imageReaders = if (raw?.reader == null) 0 else 1,
+            openImages = raw?.openImageCount ?: 0,
             cameraWorkers = if (shutdownRequested.get()) 0 else runtime.workerCount,
+            activeRawTransactions = if (raw == null) 0 else 1,
+            pendingRawImages = raw?.pendingImageCount ?: 0,
+            pendingRawResults = raw?.pendingResultCount ?: 0,
         )
     }
 
-    private fun mark(milestone: CameraStartupMilestone, selection: ActiveCameraSelection) {
+    internal fun mark(milestone: CameraStartupMilestone, selection: ActiveCameraSelection) {
         trace.mark(
             milestone,
             elapsedRealtimeNs(),
@@ -686,12 +745,12 @@ class CameraSessionController private constructor(
         )
     }
 
-    private fun transition(next: CameraEngineState) {
+    internal fun transition(next: CameraEngineState) {
         CameraStateTransitions.requireAllowed(mutableState.value, next)
         mutableState.value = next
     }
 
-    private fun <T> dispatchDelivered(
+    internal fun <T> dispatchDelivered(
         delivery: CloseOnceCameraResource<T>,
         block: suspend () -> Unit,
     ) {
@@ -702,7 +761,7 @@ class CameraSessionController private constructor(
         }
     }
 
-    private fun closeCleanup(cleanup: CameraResourceCleanup?) {
+    internal fun closeCleanup(cleanup: CameraResourceCleanup?) {
         if (cleanup == null) return
         try {
             cleanup.closeOnce()
@@ -711,7 +770,7 @@ class CameraSessionController private constructor(
         }
     }
 
-    private fun closePlan(plan: CameraCleanupPlan?) {
+    internal fun closePlan(plan: CameraCleanupPlan?) {
         if (plan == null) return
         try {
             plan.closeAllOnce()
@@ -726,25 +785,25 @@ class CameraSessionController private constructor(
         val close: () -> Unit,
     )
 
-    private data class ActiveSurface(
+    internal data class ActiveSurface(
         val identity: PreviewSurfaceIdentity,
         val token: Any,
         val cleanup: CameraResourceCleanup,
     )
 
-    private data class ActiveSession(
+    internal data class ActiveSession(
         val handle: CameraCaptureSessionHandle,
         val cleanup: CameraResourceCleanup,
     )
 
-    private data class ActiveDevice(
+    internal data class ActiveDevice(
         val handle: CameraDeviceHandle,
         val cleanup: CameraResourceCleanup,
         var eventPermit: PendingCameraOperationPermit,
         val openCommand: OpenCommand,
     )
 
-    private data class PreviewIntent(
+    internal data class PreviewIntent(
         val selection: ActiveCameraSelection,
         val route: CameraRoute,
         val surface: ActiveSurface,
@@ -752,7 +811,12 @@ class CameraSessionController private constructor(
         val settings: SettingsSnapshot,
         val attempt: PreviewConfigurationAttemptKind,
     ) {
-        fun identity() = CameraOperationIdentity(selection, surface.identity, attempt)
+        fun identity(captureToken: CaptureToken? = null) = CameraOperationIdentity(
+            selection,
+            surface.identity,
+            attempt,
+            captureToken,
+        )
     }
 
     private data class SwitchCommand(
@@ -760,7 +824,7 @@ class CameraSessionController private constructor(
         val cleanupPermit: PendingCameraOperationPermit,
     )
 
-    private data class OpenCommand(
+    internal data class OpenCommand(
         val preview: PreviewIntent,
         val openPermit: PendingCameraOperationPermit,
         val deviceEventPermit: AtomicReference<PendingCameraOperationPermit?> = AtomicReference(null),
@@ -785,8 +849,65 @@ class CameraSessionController private constructor(
         val request: PreparedPreviewRequest,
     )
 
-    private data class ControllerRuntime(
+    internal data class ActiveRawTransaction(
+        val context: RawCaptureContext,
+        val outputPlan: CameraSessionOutputPlan,
+        val acquisition: OneShotRawAcquisition<SensorRawImage, SensorRawCaptureResult>,
+        val publicationPermit: RawPublicationPermit,
+        var reader: RawImageReaderHandle? = null,
+        var readerCleanup: CameraResourceCleanup? = null,
+        var imagePermit: PendingCameraOperationPermit? = null,
+        var resultPermit: PendingCameraOperationPermit? = null,
+        var waitJob: Job? = null,
+        var deadlineJob: Job? = null,
+        var openImageCount: Int = 0,
+        var pendingImageCount: Int = 0,
+        var pendingResultCount: Int = 0,
+    ) {
+        fun refreshPendingCounts() {
+            val counts = acquisition.pendingCounts()
+            pendingImageCount = counts.first
+            pendingResultCount = counts.second
+        }
+    }
+
+    internal data class RawConfigureCommand(
+        val preview: PreviewIntent,
+        val context: RawCaptureContext,
+        val device: CameraDeviceHandle,
+        val configurationPermit: PendingCameraOperationPermit,
+        val imagePermit: PendingCameraOperationPermit,
+        val resultPermit: PendingCameraOperationPermit,
+        val transaction: ActiveRawTransaction,
+    )
+
+    internal data class RawCaptureCommand(
+        val configure: RawConfigureCommand,
+        val session: CameraCaptureSessionHandle,
+        val previewRequest: PreparedPreviewRequest,
+        val rawRequest: PreparedRawRequest,
+    )
+
+    internal data class RestorePreviewCommand(
+        val preview: PreviewIntent,
+        val token: CaptureToken,
+        val outcome: RawCaptureOutcome,
+        val device: CameraDeviceHandle,
+        val configurationPermit: PendingCameraOperationPermit,
+        val attempt: Int,
+    )
+
+    internal data class RestoreRepeatingCommand(
+        val restore: RestorePreviewCommand,
+        val session: CameraCaptureSessionHandle,
+        val request: PreparedPreviewRequest,
+        val repeatingPermit: PendingCameraOperationPermit,
+        val firstFramePermit: PendingCameraOperationPermit,
+    )
+
+    internal data class ControllerRuntime(
         val platform: CameraOwnerPlatform,
+        val sensorDngWriter: SensorDngWriter,
         val dispatcher: CoroutineDispatcher,
         val shutdownWorker: suspend () -> Unit,
         val workerCount: Int,
@@ -794,154 +915,16 @@ class CameraSessionController private constructor(
         init { require(workerCount in 0..1) { "At most one camera callback worker is supported" } }
     }
 
-    private class AndroidDeviceHandle(val device: CameraDevice) : CameraDeviceHandle {
-        override fun close() = device.close()
-    }
-
-    private class AndroidSessionHandle(val session: CameraCaptureSession) : CameraCaptureSessionHandle {
-        override fun close() = session.close()
-    }
-
-    private class AndroidPreparedPreviewRequest(val request: CaptureRequest) : PreparedPreviewRequest
-
-    private class AndroidCameraOwnerPlatform(
-        private val cameraManager: CameraManager,
-        private val callbackHandler: Handler,
-    ) : CameraOwnerPlatform {
-        @SuppressLint("MissingPermission")
-        override fun open(cameraId: CameraTransportId, callbacks: CameraOpenCallbacks) {
-            var delivered: CloseOnceCameraResource<CameraDeviceHandle>? = null
-            fun deliveryFor(device: CameraDevice): CloseOnceCameraResource<CameraDeviceHandle> {
-                delivered?.let { return it }
-                return CloseOnceCameraResource<CameraDeviceHandle>(
-                    AndroidDeviceHandle(device),
-                    CameraDeviceHandle::close,
-                ).also { delivered = it }
-            }
-            cameraManager.openCamera(
-                cameraId.value,
-                object : CameraDevice.StateCallback() {
-                    override fun onOpened(camera: CameraDevice) = callbacks.onOpened(deliveryFor(camera))
-                    override fun onDisconnected(camera: CameraDevice) = callbacks.onDisconnected(deliveryFor(camera))
-                    override fun onError(camera: CameraDevice, error: Int) = callbacks.onError(deliveryFor(camera), error)
-                },
-                callbackHandler,
-            )
-        }
-
-        override fun configurePreview(
-            device: CameraDeviceHandle,
-            surfaceToken: Any,
-            configuration: PreviewConfiguration,
-            settings: SettingsSnapshot,
-            attempt: PreviewConfigurationAttemptKind,
-            callbacks: CameraSessionCallbacks,
-        ) = configurePreviewTargeted(
-            device = device,
-            surfaceToken = surfaceToken,
-            physicalCameraId = null,
-            configuration = configuration,
-            settings = settings,
-            attempt = attempt,
-            callbacks = callbacks,
-        )
-
-        override fun configurePreviewTargeted(
-            device: CameraDeviceHandle,
-            surfaceToken: Any,
-            physicalCameraId: PhysicalCameraId?,
-            configuration: PreviewConfiguration,
-            settings: SettingsSnapshot,
-            attempt: PreviewConfigurationAttemptKind,
-            callbacks: CameraSessionCallbacks,
-        ) {
-            val camera = (device as AndroidDeviceHandle).device
-            val surface = surfaceToken as Surface
-            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            builder.addTarget(surface)
-            if (attempt == PreviewConfigurationAttemptKind.REQUESTED && settings.fpsRequest.overrideEnabled) {
-                configuration.fps.resolvedRange?.let { range ->
-                    builder.set(
-                        CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                        Range(range.minimum, range.maximum),
-                    )
-                }
-            }
-            val request = AndroidPreparedPreviewRequest(builder.build())
-            var delivered: CloseOnceCameraResource<CameraCaptureSessionHandle>? = null
-            fun deliveryFor(session: CameraCaptureSession): CloseOnceCameraResource<CameraCaptureSessionHandle> {
-                delivered?.let { return it }
-                return CloseOnceCameraResource<CameraCaptureSessionHandle>(
-                    AndroidSessionHandle(session),
-                    CameraCaptureSessionHandle::close,
-                ).also { delivered = it }
-            }
-            val stateCallback = object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(session: CameraCaptureSession) {
-                    callbacks.onConfigured(deliveryFor(session), request)
-                }
-
-                override fun onConfigureFailed(session: CameraCaptureSession) {
-                    callbacks.onConfigureFailed(deliveryFor(session))
-                }
-            }
-            if (physicalCameraId == null) {
-                camera.createCaptureSession(
-                    listOf(surface),
-                    stateCallback,
-                    callbackHandler,
-                )
-            } else {
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
-                    throw UnsupportedOperationException("Physical preview output requires Android API 28+")
-                }
-                createPhysicalPreviewSession(camera, surface, physicalCameraId, stateCallback)
-            }
-        }
-
-        @TargetApi(Build.VERSION_CODES.P)
-        private fun createPhysicalPreviewSession(
-            camera: CameraDevice,
-            surface: Surface,
-            physicalCameraId: PhysicalCameraId,
-            callbacks: CameraCaptureSession.StateCallback,
-        ) {
-            val output = OutputConfiguration(surface)
-            output.setPhysicalCameraId(physicalCameraId.value)
-            camera.createCaptureSessionByOutputConfigurations(
-                listOf(output),
-                callbacks,
-                callbackHandler,
-            )
-        }
-
-        override fun startRepeating(
-            session: CameraCaptureSessionHandle,
-            request: PreparedPreviewRequest,
-            onFrame: () -> Unit,
-        ) {
-            val realSession = (session as AndroidSessionHandle).session
-            val realRequest = (request as AndroidPreparedPreviewRequest).request
-            realSession.setRepeatingRequest(
-                realRequest,
-                object : CameraCaptureSession.CaptureCallback() {
-                    override fun onCaptureCompleted(
-                        session: CameraCaptureSession,
-                        request: CaptureRequest,
-                        result: TotalCaptureResult,
-                    ) = onFrame()
-                },
-                callbackHandler,
-            )
-        }
-    }
-
     private companion object {
-        fun createAndroidRuntime(cameraManager: CameraManager): ControllerRuntime {
+        fun createAndroidRuntime(
+            cameraManager: CameraManager,
+            sensorDngWriter: SensorDngWriter,
+        ): ControllerRuntime {
             val thread = HandlerThread("camx-camera-control").apply { start() }
             val handler = Handler(thread.looper)
             return ControllerRuntime(
                 AndroidCameraOwnerPlatform(cameraManager, handler),
+                sensorDngWriter,
                 handler.asCoroutineDispatcher("camx-camera-control"),
                 shutdownWorker = {
                     withContext(Dispatchers.IO) {
@@ -952,6 +935,14 @@ class CameraSessionController private constructor(
                 workerCount = 1,
             )
         }
+
+        fun unavailableDngWriter() = SensorDngWriter { _, image, _, _ ->
+            runCatching { image.close() }
+            failedStatic(RawUnsupported)
+        }
+
+        private fun failedStatic(failure: CameraFailure): RawCaptureOutcome =
+            RawCaptureOutcome.Failed(failure)
 
         fun mapOpenInvocationFailure(error: Throwable): CameraFailure = when (error) {
             is SecurityException -> PermissionDenied(permanentlyDenied = false)

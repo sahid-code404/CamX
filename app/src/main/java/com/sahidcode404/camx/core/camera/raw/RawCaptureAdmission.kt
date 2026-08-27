@@ -44,11 +44,11 @@ object RawCaptureAdmission {
         val rejection = when {
             input.shutdown -> RawAdmissionRejection.SHUTDOWN
             input.pausing -> RawAdmissionRejection.PAUSING
+            input.captureActive -> RawAdmissionRejection.CAPTURE_ALREADY_ACTIVE
             !input.lifecycleActive -> RawAdmissionRejection.LIFECYCLE_INACTIVE
             !input.previewVerified -> RawAdmissionRejection.PREVIEW_NOT_VERIFIED
             input.selection == null -> RawAdmissionRejection.SELECTION_UNAVAILABLE
             input.sessionBusy -> RawAdmissionRejection.SESSION_BUSY
-            input.captureActive -> RawAdmissionRejection.CAPTURE_ALREADY_ACTIVE
             input.representation == null -> RawAdmissionRejection.SENSOR_RAW_UNSUPPORTED
             !input.requiredMetadataAvailable -> RawAdmissionRejection.REQUIRED_METADATA_UNAVAILABLE
             !input.boundedResourcesAvailable -> RawAdmissionRejection.BOUNDED_RESOURCES_UNAVAILABLE

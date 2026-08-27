@@ -142,6 +142,10 @@ data object RawPairTimeout : CameraFailure {
     override val policy = policy(category = CameraFailureCategory.RAW, retry = true)
 }
 
+data class DngUnsupported(val reason: String) : CameraFailure {
+    override val policy = policy(category = CameraFailureCategory.RAW, userAction = true)
+}
+
 data class DngWriteFailure(val reason: String) : CameraFailure {
     override val policy = policy(category = CameraFailureCategory.STORAGE, userAction = true)
 }

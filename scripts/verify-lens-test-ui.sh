@@ -6,6 +6,7 @@ cd "$root"
 
 readonly production="app/src/main/java"
 readonly controller="$production/com/sahidcode404/camx/core/camera/session/CameraSessionController.kt"
+readonly platform="$production/com/sahidcode404/camx/core/camera/session/AndroidCameraOwnerPlatform.kt"
 readonly projector="$production/com/sahidcode404/camx/core/camera/lens/CameraLensUiProjector.kt"
 readonly coordinator="$production/com/sahidcode404/camx/core/camera/bootstrap/VisiblePreviewCoordinator.kt"
 readonly feature="$production/com/sahidcode404/camx/feature"
@@ -15,8 +16,8 @@ if [[ "$open_count" != "1" ]]; then
   echo "Lens-test guard requires exactly one production openCamera call; found $open_count." >&2
   exit 1
 fi
-rg --quiet '\.openCamera\s*\(' "$controller" || {
-  echo 'The sole openCamera call must remain in CameraSessionController.kt.' >&2
+rg --quiet '\.openCamera\s*\(' "$platform" || {
+  echo 'The sole openCamera call must remain in the controller-owned Android platform.' >&2
   exit 1
 }
 
@@ -60,7 +61,7 @@ for requirement in \
   'createCaptureSessionByOutputConfigurations' \
   'Build.VERSION.SDK_INT < Build.VERSION_CODES.P' \
   'createCaptureSession('; do
-  rg --fixed-strings --quiet "$requirement" "$controller" || {
+  rg --fixed-strings --quiet "$requirement" "$platform" || {
     echo "Physical/direct preview owner requirement missing: $requirement" >&2
     exit 1
   }
@@ -78,8 +79,13 @@ for requirement in \
   }
 done
 
-if rg --quiet '\b(ImageReader|DngCreator|RAW_SENSOR|AIMAGE_FORMAT_RAW|RawCapture)\b' "$projector" "$coordinator" "$feature"; then
-  echo 'RAW implementation is outside the AUX lens test checkpoint.' >&2
+if rg --quiet '\b(ImageReader|DngCreator|RAW_SENSOR|AIMAGE_FORMAT_RAW)\b' \
+  "$projector" "$coordinator" "$feature"; then
+  echo 'Lens presentation may expose immutable capture state but never RAW/Camera2 implementation details.' >&2
+  exit 1
+fi
+if rg --quiet '\bRawCapture' "$projector"; then
+  echo 'Lens projection must remain independent of RAW capture state.' >&2
   exit 1
 fi
 

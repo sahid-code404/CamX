@@ -64,4 +64,15 @@ class CameraFailureTest {
         assertFalse(policy.fallbackPermitted)
         assertEquals(TrustChange.REJECT_RAW_PROFILE, policy.trustChange)
     }
+
+    @Test
+    fun dngInteroperabilityFailureDoesNotChangeCameraOrRawTrust() {
+        val policy = DngUnsupported("missing truthful interpretation metadata").policy
+
+        assertEquals(CameraFailureCategory.RAW, policy.category)
+        assertFalse(policy.structural)
+        assertFalse(policy.fallbackPermitted)
+        assertFalse(policy.sameCanonicalFailoverPermitted)
+        assertEquals(TrustChange.NONE, policy.trustChange)
+    }
 }

@@ -13,6 +13,12 @@ internal enum class PendingCameraStage {
     PREVIEW_CONFIGURATION,
     FIRST_FRAME,
     CLEANUP,
+    RAW_CONFIGURATION,
+    RAW_IMAGE,
+    RAW_RESULT,
+    RAW_RESTORE_CONFIGURATION,
+    RAW_RESTORE_REPEATING,
+    RAW_RESTORE_FIRST_FRAME,
 }
 
 internal data class CameraOperationIdentity(

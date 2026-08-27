@@ -70,7 +70,7 @@ require_text "$screen" 'onSurfaceDestroyed = onSurfaceDestroyed'
 # Production startup must traverse existing seed/policy/provider/controller boundaries.
 require_text "$graph" 'AndroidFirstInstallSeedDiscovery('
 require_text "$graph" 'AndroidSelectedSeedPreviewCapabilityReader(cameraManager)'
-require_text "$graph" 'private val controller = CameraSessionController(cameraManager)'
+require_text "$graph" 'private val controller = CameraSessionController(appContext, cameraManager)'
 require_text "$graph" 'controller.startPreview('
 require_text "$coordinator" 'PreviewStreamPolicy::resolve'
 require_text "$coordinator" 'surfacePort.awaitBufferSize(lease.identity, supported.configuration.size)'
@@ -86,17 +86,20 @@ fi
 for requirement in \
   'VISIBLE_PREVIEW_MAX_STREAMS = 128' \
   'VISIBLE_PREVIEW_MAX_FPS_RANGES = 64' \
+  'VISIBLE_PREVIEW_MAX_RAW_SIZES = 128' \
   'getOutputSizes(SurfaceHolder::class.java)' \
   'getOutputMinFrameDuration(SurfaceHolder::class.java, size)' \
   'CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES' \
   'CameraCharacteristics.SENSOR_ORIENTATION'; do
   require_text "$reader" "$requirement"
 done
+require_text "$reader" 'CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW'
+require_text "$reader" 'streamMap.getOutputSizes(ImageFormat.RAW_SENSOR)'
 reject 'selected-route capability reader owns or opens a camera' \
   '\bCameraDevice\b|\bCameraCaptureSession\b|\bopenCamera\s*\(|\bcreateCaptureSession\s*\(|\bsetRepeatingRequest\s*\(' \
   "$reader"
-reject 'selected-route reader expanded into AUX/RAW/high-speed topology' \
-  '\bphysicalCameraIds\b|\bRAW_SENSOR\b|REQUEST_AVAILABLE_CAPABILITIES_RAW|\bImageReader\b|\bgetHighResolutionOutputSizes\b|\bgetHighSpeedVideo' \
+reject 'selected-route reader expanded into AUX/high-speed topology or resource ownership' \
+  '\bphysicalCameraIds\b|\bImageReader\b|\bgetHighResolutionOutputSizes\b|\bgetHighSpeedVideo' \
   "$reader"
 
 # Feature/UI code can carry Surface and immutable state, never Camera2 ownership types.

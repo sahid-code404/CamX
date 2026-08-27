@@ -174,6 +174,7 @@ under any milestone without a new path-bounded ticket.
 ## CAMX-108 — One-shot RAW capture transaction
 
 - Tier: A.
+- Software status: implemented on the phase branch; exact-head CI/OTA and physical DNG acceptance remain separate gates.
 - Goal: configure temporary RAW, capture/pair/write exactly one image, destroy it, restore preview.
 - Allowed files: `core/camera/raw/**`, necessary session transaction hooks, native RAW owners, tests.
 - Forbidden files: topology canonicalization, UI navigation, OTA, future processing kernels.
@@ -181,12 +182,12 @@ under any milestone without a new path-bounded ticket.
 - Output contracts: typed saved/cancelled/failure result and restored preview state.
 - State ownership: one `RawCaptureTransaction`; session owner authorizes its state transitions.
 - Resource ownership: transaction owns reader/images/pending row until explicit one-time transfer/close.
-- Error behavior: bounded timeout; structural RAW failure may fail over same canonical only; output failure never does.
+- Error behavior: bounded timeout; an exact-profile structural RAW rejection is isolated to runtime RAW evidence; CAMX-108 performs no automatic profile substitution; output failure never changes trust.
 - Universality rules: use advertised/verified RAW data and exact active profile characteristics.
 - Performance constraints: RAW absent from idle session; queues/maps bounded; no unnecessary pixel copy.
 - Tests required: callback orders, overflow, stale tokens, timeouts, orientation, every MediaStore failure.
 - CI requirements: ownership/static guards plus JVM/native tests and leak-counter assertions.
-- Hardware acceptance: every RAW profile × rotations, cancellation/storage failure, preview restored.
+- Hardware acceptance: every RAW-capable visible profile × rotations, real-decoder DNG validation, cancellation/storage failure, preview restored, and sequential stress; not established by JVM/CI.
 
 ## CAMX-109 — Settings and lens UI
 
